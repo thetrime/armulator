@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <mach-o/loader.h>
+#include <mach-o/fat.h>
 #include <mach-o/nlist.h>
 
 typedef struct
@@ -13,7 +14,7 @@ typedef struct
 } breakpoint_t;
 
 breakpoint_t* find_breakpoint(uint32_t pc);
-uint32_t load_executable(char* filename);
+void load_executable(char* filename);
 
 struct stub_t
 {

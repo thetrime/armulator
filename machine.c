@@ -6,6 +6,8 @@
 #include "arm.h"
 #include "loader.h"
 #include "stubs.h"
+#include "machine.h"
+
 typedef enum
 {
    LDR_I = 0,
@@ -79,13 +81,7 @@ page_table_t* page_tables = NULL;
 #define CHECK_CONDITION  {if (!condition_passed(instruction.condition)) continue;}
 
 
-struct
-{
-   uint8_t z, c, n, v, t;
-   uint8_t itstate;
-   uint32_t next_instruction;
-   uint32_t r[16];
-} state;
+state_t state;
 
 unsigned char stack[1024 * 1024];
 
@@ -2302,7 +2298,9 @@ int main(int argc, char** argv)
       return -1;
    }
    register_stubs();
-   state.next_instruction = load_executable(argv[1]);
+   load_executable(argv[1]);
+   return -1;
+   state.next_instruction = state.PC;
    state.PC = 0;
    initialize_state();
    printf("Memory mapped. Starting execution at %08x\n", state.PC);

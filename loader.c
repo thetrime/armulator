@@ -1,5 +1,6 @@
 #include "loader.h"
 #include "machine.h"
+#include <unistd.h>
 
 //#define printf(...) (void)0
 
@@ -248,7 +249,22 @@ void bind_symbols(char* mode, unsigned char* start, unsigned char* end)
    }
 }
 
-uint32_t load_executable(char* filename)
+char* sim_chroot = "armv7";
+
+char* find_dylib(char* base, char* suggested_path)
+{
+   char* filename = malloc(strlen(suggested_path) + strlen(sim_chroot) + 2);
+   sprintf(filename, "%s%s", sim_chroot, suggested_path);
+   if (access(filename, F_OK ) != -1)
+      return filename;
+   printf("Failed to find file at %s\n", filename);
+   free(filename);
+   return NULL;
+}
+
+#define byteswap32(x) ((((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >>  8) | (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24))
+
+void load_executable(char* filename)
 {
    unsigned char* data;
    struct load_command* command;
@@ -262,8 +278,29 @@ uint32_t load_executable(char* filename)
    fread(data, file_length, 1, file);
    fclose(file);
    header = (struct mach_header*)data;
+   uint32_t base = 0;
+   if (header->magic == FAT_CIGAM)
+   {
+      // Universal binary. Lets find the armv7 one
+      struct fat_header* fat = (struct fat_header*)data;
+      printf("Universal binary supporting %d different CPU architectures\n", byteswap32(fat->nfat_arch));
+      uint32_t count = byteswap32(fat->nfat_arch);
+      uint8_t arch_found = 0;
+      for (int i = 0; i < count && !arch_found; i++)
+      {
+         struct fat_arch* arch = (struct fat_arch*)(data + sizeof(struct fat_header) + (i*(sizeof(struct fat_arch))));
+         if (arch->cputype == byteswap32(CPU_TYPE_ARM))
+         {
+            header = (struct mach_header*)&data[byteswap32(arch->offset)];
+            base = byteswap32(arch->offset);
+            arch_found = 1;
+            break;
+         }
+      }
+      assert(arch_found);
+   }
    assert(header->magic == MH_MAGIC);
-   command = (struct load_command*)(data + sizeof(struct mach_header));
+   command = (struct load_command*)(data + base + sizeof(struct mach_header));
    uint32_t initial_pc = 0;
    int segment_number = 0;   
    
@@ -286,7 +323,7 @@ uint32_t load_executable(char* filename)
                }
                chunk = calloc(s->size, 1);
                if (!((s->flags & S_ZEROFILL) == S_ZEROFILL))
-                 memcpy(chunk, &data[s->offset], s->size);
+                 memcpy(chunk, &data[base + s->offset], s->size);
                map_memory(chunk, s->addr, s->size);
             }
             segment_list_t* node = malloc(sizeof(segment_list_t));
@@ -303,11 +340,11 @@ uint32_t load_executable(char* filename)
             printf("Got symtab containing %d symbols\n", c->nsyms);
             for (int j = 0; j < c->nsyms; j++)
             {
-               struct nlist* index_ptr = (struct nlist*)(&data[c->symoff + j*sizeof(struct nlist)]);
+               struct nlist* index_ptr = (struct nlist*)(&data[base + c->symoff + j*sizeof(struct nlist)]);
                if (index_ptr->n_type & N_EXT)
                {
                   // External symbol
-                  //printf("External Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[c->stroff + index_ptr->n_un.n_strx]);
+                  //printf("External Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[base + c->stroff + index_ptr->n_un.n_strx]);
                }
             }
 
@@ -323,20 +360,94 @@ uint32_t load_executable(char* filename)
          {
             struct dyld_info_command* c = (struct dyld_info_command*)command;
             printf("Binding symbols\n");
-            bind_symbols("external", &data[c->bind_off], &data[c->bind_off + c->bind_size]);
+            //bind_symbols("external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
             printf("Binding lazy symbols\n");
-            bind_symbols("lazy", &data[c->lazy_bind_off], &data[c->lazy_bind_off + c->lazy_bind_size]);
+            //bind_symbols("lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
             break;
          }
          case LC_CODE_SIGNATURE:
-            printf("Code signature\n");
+            printf("Code signature. Ignored\n");
             break;
+         case LC_UNIXTHREAD:
+         {
+            uint32_t* base = ((uint32_t*)((char*)command + sizeof(struct thread_command)));
+            uint32_t flavor = base[0];
+            uint32_t count = base[1];
+            assert(count == 17); // Ordinary threadstate
+            state.r[0] = base[2];
+            state.r[1] = base[3];
+            state.r[2] = base[4];
+            state.r[3] = base[5];
+            state.r[4] = base[6];
+            state.r[5] = base[7];
+            state.r[6] = base[8];
+            state.r[7] = base[9];
+            state.r[8] = base[10];
+            state.r[9] = base[11];
+            state.r[10] = base[12];
+            state.r[11] = base[13];
+            state.r[12] = base[14];
+            state.r[13] = base[15];
+            state.r[14] = base[16];
+            state.r[15] = base[17];
+            //state.cspr = base[2];
+            break;
+         }
+         case LC_THREAD:
+            printf("Thread state given. Not implemented\n");
+            break;
+         case LC_LOAD_DYLIB:
+         {
+            struct dylib_command* c = (struct dylib_command*)command;
+            printf("Load dylib %s (compatibility version %d.%d.%d, current version %d.%d.%d)\n", ((unsigned char*)command) + c->dylib.name.offset, (c->dylib.compatibility_version >> 16) & 0xffff, (c->dylib.compatibility_version >> 8) & 0xff, (c->dylib.compatibility_version >> 0) & 0xff, (c->dylib.current_version >> 16) & 0xffff, (c->dylib.current_version >> 8) & 0xff, (c->dylib.current_version >> 0) & 0xff);
+            // FIXME: Check if already loaded!
+            char* dylib_name = find_dylib(filename, ((char*)command) + c->dylib.name.offset);
+            if (dylib_name != NULL)
+            {
+               printf("Found at %s\n", dylib_name);
+               // Load here
+               load_executable(dylib_name);
+               free(dylib_name);
+            }
+            else
+            {
+               printf("Failed to find dylib\n");
+               exit(-1);
+            }
+            
+            break;
+         }
+         case LC_LOAD_DYLINKER:
+         {
+            struct dylinker_command* c = (struct dylinker_command*)command;
+            printf("Executable has requested dylinker %s\n", ((unsigned char*)command) + c->name.offset);
+            break;
+         }
+         case LC_UUID:
+         {
+            struct uuid_command* c = (struct uuid_command*)command;
+            printf("UUID is ");
+            for (int j = 0; j < 8; j++)
+               printf("%02X", c->uuid[j]);
+            printf("\n");
+            break;
+         }
+         case LC_FUNCTION_STARTS:
+         {
+            printf("Function start table. Ignored\n");
+            break;
+         }
+         case LC_VERSION_MIN_IPHONEOS:
+         {
+            struct version_min_command* c = (struct version_min_command*)command;
+            printf("Executable requires version %d.%d.%d or greater, and was compiled with SDK %d.%d.%d\n", (c->version >> 16) & 0xffff, (c->version >> 8) & 0xff, (c->version >> 0) & 0xff, (c->sdk >> 16) & 0xffff, (c->sdk >> 8) & 0xff, (c->sdk >> 0) & 0xff);
+            break;
+         }
          default:
-            printf("Got other type %d\n", command->cmd);
+            printf("Got other type 0x%x\n", command->cmd);
       }
       command = (struct load_command*)((char*)command + command->cmdsize);
    }
-   return initial_pc;
 }
 
 breakpoint_t* find_breakpoint(uint32_t pc)
@@ -350,4 +461,3 @@ breakpoint_t* find_breakpoint(uint32_t pc)
    }
    assert(0 && "Illegal breakpoint");
 }
-
