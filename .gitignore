@@ -1,0 +1,4 @@
+*.o
+armulator
+*~
+stub_glue.c
