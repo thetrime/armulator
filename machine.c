@@ -1,12 +1,3 @@
-// Current problem:
-//   Sorting out what value state.PC should actually have. I think the problem is that it should point to the start instruction 2 past the current one, and
-//   because the instructions are variable sizes, the PC+2 and PC+4 logic I have in the branch execution is never going to be correct for all cases
-//   instead, I can probably decode TWO instructions (assuming the decode never looks at state.PC, which it shouldnt), then swap the current and next after execution
-//   note that this pipeline means that branches could muck things up badly! After a branch we must take care to flush the pipeline and decode TWO instructions,
-//   rather than just 1
-
-//   This isnt quite right, but there are still problems with having state.PC not be 'correct'. For example, things that read from memory at PC+2, or R15+2...
-
 #include <stdio.h>
 #include <assert.h>
 #include <stdint.h>
