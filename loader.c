@@ -336,7 +336,6 @@ uint32_t load_executable(char* filename)
       }
       command = (struct load_command*)((char*)command + command->cmdsize);
    }
-   exit(-1);
    return initial_pc;
 }
 
