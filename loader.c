@@ -262,6 +262,15 @@ char* find_dylib(char* base, char* suggested_path)
    return NULL;
 }
 
+struct loaded_dylib_t
+{
+   struct loaded_dylib_t* next;
+   char* dylib_name;
+};
+
+typedef struct loaded_dylib_t loaded_dylib_t;
+loaded_dylib_t* loaded_dylibs = NULL;
+
 #define byteswap32(x) ((((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >>  8) | (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24))
 
 void load_executable(char* filename)
@@ -311,12 +320,12 @@ void load_executable(char* filename)
          case LC_SEGMENT:
          {            
             struct segment_command* c = (struct segment_command*)command;
-            printf("Got segment: %s (with %d sections) mapped to %08x\n", c->segname, c->nsects, c->vmaddr);
+            //printf("Got segment: %s (with %d sections) mapped to %08x\n", c->segname, c->nsects, c->vmaddr);
             for (int j = 0; j < c->nsects; j++)
             {
                unsigned char* chunk = NULL;
                struct section* s = (struct section*)(((char*)command) + sizeof(struct segment_command) + j*sizeof(struct section));
-               printf("   Got section %s in segment %s (mapped to %08x)\n", s->sectname, c->segname, s->addr);
+               //printf("   Got section %s in segment %s (mapped to %08x)\n", s->sectname, c->segname, s->addr);
                if ((strcmp(c->segname, "__TEXT") == 0) && (strcmp(s->sectname, "__text") == 0))
                {
                   initial_pc = s->addr;
@@ -359,10 +368,16 @@ void load_executable(char* filename)
          case LC_DYLD_INFO_ONLY:
          {
             struct dyld_info_command* c = (struct dyld_info_command*)command;
-            printf("Binding symbols\n");
-            //bind_symbols("external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
-            printf("Binding lazy symbols\n");
-            //bind_symbols("lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
+            printf("Binding symbols from %s (%d bytes of binding opcodes)\n", filename, c->bind_size);
+            bind_symbols("external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
+            printf("Binding lazy symbols from  %s (%d bytes of binding opcodes)\n", filename, c->lazy_bind_size);
+            bind_symbols("lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
+            break;
+         }
+         case LC_ID_DYLIB:
+         {
+            struct dylib_command* c = (struct dylib_command*)command;            
+            printf("This dylib is %s (compatibility version %d.%d.%d, current version %d.%d.%d)\n", ((unsigned char*)command) + c->dylib.name.offset, (c->dylib.compatibility_version >> 16) & 0xffff, (c->dylib.compatibility_version >> 8) & 0xff, (c->dylib.compatibility_version >> 0) & 0xff, (c->dylib.current_version >> 16) & 0xffff, (c->dylib.current_version >> 8) & 0xff, (c->dylib.current_version >> 0) & 0xff);
             break;
          }
          case LC_CODE_SIGNATURE:
@@ -399,22 +414,36 @@ void load_executable(char* filename)
          case LC_LOAD_DYLIB:
          {
             struct dylib_command* c = (struct dylib_command*)command;
-            printf("Load dylib %s (compatibility version %d.%d.%d, current version %d.%d.%d)\n", ((unsigned char*)command) + c->dylib.name.offset, (c->dylib.compatibility_version >> 16) & 0xffff, (c->dylib.compatibility_version >> 8) & 0xff, (c->dylib.compatibility_version >> 0) & 0xff, (c->dylib.current_version >> 16) & 0xffff, (c->dylib.current_version >> 8) & 0xff, (c->dylib.current_version >> 0) & 0xff);
-            // FIXME: Check if already loaded!
-            char* dylib_name = find_dylib(filename, ((char*)command) + c->dylib.name.offset);
-            if (dylib_name != NULL)
+            uint8_t dylib_already_loaded = 0;
+            for (loaded_dylib_t* x = loaded_dylibs; x; x = x->next)
             {
-               printf("Found at %s\n", dylib_name);
-               // Load here
-               load_executable(dylib_name);
-               free(dylib_name);
+               if (strcmp(x->dylib_name, ((char*)command) + c->dylib.name.offset) == 0)
+               {
+                  dylib_already_loaded = 1;
+                  break;
+               }
             }
-            else
+            if (!dylib_already_loaded)
             {
-               printf("Failed to find dylib\n");
-               exit(-1);
+               printf("Load dylib %s (compatibility version %d.%d.%d, current version %d.%d.%d)\n", ((unsigned char*)command) + c->dylib.name.offset, (c->dylib.compatibility_version >> 16) & 0xffff, (c->dylib.compatibility_version >> 8) & 0xff, (c->dylib.compatibility_version >> 0) & 0xff, (c->dylib.current_version >> 16) & 0xffff, (c->dylib.current_version >> 8) & 0xff, (c->dylib.current_version >> 0) & 0xff);
+               char* dylib_name = find_dylib(filename, ((char*)command) + c->dylib.name.offset);
+               if (dylib_name != NULL)
+               {
+                  printf("Found at %s\n", dylib_name);
+                  // Load here
+                  load_executable(dylib_name);
+                  free(dylib_name);
+               }
+               else
+               {
+                  printf("Failed to find dylib\n");
+                  exit(-1);
+               }
+               loaded_dylib_t* x = malloc(sizeof(loaded_dylib_t));
+               x->dylib_name = strdup(((char*)command) + c->dylib.name.offset);
+               x->next = loaded_dylibs;
+               loaded_dylibs = x;                  
             }
-            
             break;
          }
          case LC_LOAD_DYLINKER:
@@ -427,8 +456,12 @@ void load_executable(char* filename)
          {
             struct uuid_command* c = (struct uuid_command*)command;
             printf("UUID is ");
-            for (int j = 0; j < 8; j++)
+            for (int j = 0; j < 16; j++)
+            {
                printf("%02X", c->uuid[j]);
+               if (j == 3 || j == 5 || j == 7 || j == 9)
+                  printf("-");
+            }
             printf("\n");
             break;
          }
@@ -443,11 +476,17 @@ void load_executable(char* filename)
             printf("Executable requires version %d.%d.%d or greater, and was compiled with SDK %d.%d.%d\n", (c->version >> 16) & 0xffff, (c->version >> 8) & 0xff, (c->version >> 0) & 0xff, (c->sdk >> 16) & 0xffff, (c->sdk >> 8) & 0xff, (c->sdk >> 0) & 0xff);
             break;
          }
+         case LC_REEXPORT_DYLIB:
+         {
+            printf("Rexport dylib. Ignored\n");
+            break;
+         }
          default:
             printf("Got other type 0x%x\n", command->cmd);
       }
       command = (struct load_command*)((char*)command + command->cmdsize);
    }
+   free(data);
 }
 
 breakpoint_t* find_breakpoint(uint32_t pc)

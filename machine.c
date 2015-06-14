@@ -99,7 +99,7 @@ unsigned char* map_addr(uint32_t addr)
 
 void map_memory(unsigned char* data, uint32_t address, uint32_t length)
 {
-   printf("Adding page for %08x to %08x\n", address, address+length);
+//printf("Adding page for %08x to %08x\n", address, address+length);
    page_table_t* new_table = malloc(sizeof(page_table_t));
    new_table->next = page_tables;
    page_tables = new_table;
