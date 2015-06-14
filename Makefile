@@ -1,6 +1,6 @@
 # We must compile in 32-bit mode to avoid generating 64-bit addresses
 
-OBJECTS=machine.o loader.o stubs.o stub_glue.o
+OBJECTS=machine.o loader.o stubs.o stub_glue.o map.o
 
 
 armulator: $(OBJECTS)

@@ -1,5 +1,6 @@
 #include "loader.h"
 #include "machine.h"
+#include "map.h"
 #include <unistd.h>
 
 //#define printf(...) (void)0
@@ -86,12 +87,31 @@ uint64_t read_uleb_integer(unsigned char** p)
    return result;
 }
 
+map_t* undefined_symbols = NULL;
+
+typedef struct
+{
+   char* name;
+   uint32_t address;
+} undefined_symbol_t;
+
+
 struct segment_list_t
 {
    int segment_number;
    uint32_t base_address;
    struct segment_list_t* next;   
 };
+typedef struct segment_list_t segment_list_t;
+
+struct section_list_t
+{
+   int section_number;
+   uint32_t base_address;
+   struct section_list_t* next;   
+};
+typedef struct section_list_t section_list_t;
+
 
 typedef struct
 {
@@ -103,10 +123,6 @@ typedef struct
    int32_t addend;
    char* name;
 } sym_t;
-
-typedef struct segment_list_t segment_list_t;
-
-segment_list_t* segment_list = NULL;
 
 struct breakpage_t
 {
@@ -141,7 +157,7 @@ typedef struct breakpage_t breakpage_t;
 breakpage_t* break_pages = NULL;
 uint32_t current_page_offset = 0;
 
-void bind_sym(sym_t* sym)
+void bind_sym(segment_list_t* segment_list, sym_t* sym)
 {
    uint32_t address = 0;
    for (segment_list_t* node = segment_list; node; node = node->next)
@@ -152,6 +168,7 @@ void bind_sym(sym_t* sym)
          break;
       }
    }
+#ifdef EXTERNAL_SYMBOLS_ON_HOST
    if ((current_page_offset % VPAGE_SIZE) == 0) // If the offset is PAGE_SIZE (or 0) then we need a new page
    {
       current_page_offset = 0;
@@ -173,9 +190,16 @@ void bind_sym(sym_t* sym)
    // and write the actual code for the stub to the address of the stub code
    write_mem(4, break_pages->page_start + current_page_offset, BREAK32);
    current_page_offset += 4;
+#else
+   printf("   Need to find symbol %s\n", sym->name);
+   undefined_symbol_t* undef = malloc(sizeof(undefined_symbol_t));
+   undef->address = address;
+   undef->name = strdup(sym->name);   
+   map_put(undefined_symbols, sym->name, undef);
+#endif
 }
 
-void bind_symbols(char* mode, unsigned char* start, unsigned char* end)
+void bind_symbols(segment_list_t* segment_list, char* mode, unsigned char* start, unsigned char* end)
 {
    unsigned char* op;
    sym_t sym;
@@ -214,15 +238,15 @@ void bind_symbols(char* mode, unsigned char* start, unsigned char* end)
             sym.addend = read_sleb_integer(&op);
             break;
          case BIND_DO_BIND:
-            bind_sym(&sym);
+            bind_sym(segment_list, &sym);
             sym.offset += 4;
             break;
          case BIND_DO_BIND_ADD_ADDR_ULEB:
-            bind_sym(&sym);
+            bind_sym(segment_list, &sym);
             sym.offset += 4 + read_uleb_integer(&op);
             break;
          case BIND_DO_BIND_ADD_ADDR_IMM_SCALED:
-            bind_sym(&sym);
+            bind_sym(segment_list, &sym);
             sym.offset += 4 + (4 * ((*op) & 15));
             break;                     
          case BIND_ADD_ADDR_ULEB:
@@ -237,7 +261,7 @@ void bind_symbols(char* mode, unsigned char* start, unsigned char* end)
             uint32_t skip = read_uleb_integer(&op);
             for (int j = 0; j < count; j++)
             {
-               bind_sym(&sym);
+               bind_sym(segment_list, &sym);
                sym.offset += 4 + skip;
             }
          }
@@ -273,8 +297,32 @@ loaded_dylib_t* loaded_dylibs = NULL;
 
 #define byteswap32(x) ((((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >>  8) | (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24))
 
+void free_segment_list(segment_list_t* segment_list)
+{
+   for(segment_list_t* x = segment_list; x;)
+   {
+      segment_list_t* y = x->next;
+      free(x);
+      x = y;
+   }
+}
+
+void free_section_list(section_list_t* section_list)
+{
+   for(section_list_t* x = section_list; x;)
+   {
+      section_list_t* y = x->next;
+      free(x);
+      x = y;
+   }
+}
+
 void load_executable(char* filename)
 {
+   if (undefined_symbols == NULL)
+      undefined_symbols = alloc_map();
+   segment_list_t* segment_list = NULL;
+   section_list_t* section_list = NULL;   
    unsigned char* data;
    struct load_command* command;
    struct mach_header* header;
@@ -311,7 +359,8 @@ void load_executable(char* filename)
    assert(header->magic == MH_MAGIC);
    command = (struct load_command*)(data + base + sizeof(struct mach_header));
    uint32_t initial_pc = 0;
-   int segment_number = 0;   
+   int segment_number = 0;
+   int section_number = 1;
    
    for (int i = 0; i < header->ncmds; i++)
    {
@@ -334,6 +383,12 @@ void load_executable(char* filename)
                if (!((s->flags & S_ZEROFILL) == S_ZEROFILL))
                  memcpy(chunk, &data[base + s->offset], s->size);
                map_memory(chunk, s->addr, s->size);
+               section_list_t* section = malloc(sizeof(section_list_t));
+               section->next = section_list;
+               section->base_address = s->addr;
+               section->section_number = section_number;
+               section_number++;
+               section_list = section;
             }
             segment_list_t* node = malloc(sizeof(segment_list_t));
             node->next = segment_list;
@@ -350,10 +405,34 @@ void load_executable(char* filename)
             for (int j = 0; j < c->nsyms; j++)
             {
                struct nlist* index_ptr = (struct nlist*)(&data[base + c->symoff + j*sizeof(struct nlist)]);
-               if (index_ptr->n_type & N_EXT)
+               if ((index_ptr->n_type & N_TYPE) == N_UNDF)
                {
-                  // External symbol
-                  //printf("External Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[base + c->stroff + index_ptr->n_un.n_strx]);
+                  // Undefined symbol
+                  //printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[base + c->stroff + index_ptr->n_un.n_strx]);
+               }
+               else
+               {
+                  // FIXME: scan for pending unresolved symbols and store index_ptr->n_value at the appropriate memory address 
+                  printf("%s provides symbol %s at address %08x\n", filename, &data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
+#ifndef EXTERNAL_SYMBOLS_ON_HOST
+                  undefined_symbol_t* symbol;
+                  if (map_get(undefined_symbols, (char*)&data[base + c->stroff + index_ptr->n_un.n_strx], (void**)&symbol) == 1)
+                  {
+                     if (index_ptr->n_desc & N_ARM_THUMB_DEF)
+                     {
+                        // Set lowest bit to trigger setting thumb mode in interworking branch
+                        write_mem(4, symbol->address, (index_ptr->n_value | 1));
+                     }
+                     else
+                     {
+                        write_mem(4, symbol->address, index_ptr->n_value);
+                     }
+                  }
+                  else
+                  {
+                     printf("Symbol %s does not appear to be needed\n", &data[base + c->stroff + index_ptr->n_un.n_strx]);
+                  }
+#endif
                }
             }
 
@@ -369,9 +448,9 @@ void load_executable(char* filename)
          {
             struct dyld_info_command* c = (struct dyld_info_command*)command;
             printf("Binding symbols from %s (%d bytes of binding opcodes)\n", filename, c->bind_size);
-            bind_symbols("external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
+            bind_symbols(segment_list, "external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
             printf("Binding lazy symbols from  %s (%d bytes of binding opcodes)\n", filename, c->lazy_bind_size);
-            bind_symbols("lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
+            bind_symbols(segment_list, "lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
             break;
          }
          case LC_ID_DYLIB:
@@ -486,6 +565,8 @@ void load_executable(char* filename)
       }
       command = (struct load_command*)((char*)command + command->cmdsize);
    }
+   free_segment_list(segment_list);
+   free_section_list(section_list);
    free(data);
 }
 

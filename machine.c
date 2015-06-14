@@ -68,7 +68,7 @@ page_table_t* page_tables = NULL;
 #define CURRENT_PC32 (state.PC-4)
 #define CURRENT_PC16 (state.PC-2)
 
-#define LOAD_PC(p) {state.next_instruction = p & ~1; state.t = (p & 1);}
+#define LOAD_PC(p) {state.next_instruction = (p) & ~1; state.t = ((p) & 1);}
 
 #define UNKNOWN 0xdeadbeef
 
@@ -1866,6 +1866,7 @@ void step_machine(int steps)
       assert(decode_instruction(&instruction));
       if (state.t == 1 && state.itstate != 0)
       {
+         printf("inside IT block...\n");
          // Update the condition based on itstate
          if (state.itstate != 0 && state.t == 1)
          {
@@ -1885,7 +1886,7 @@ void step_machine(int steps)
          }
       }
 
-      printf("    %04d: ", step);
+      printf("    %04d%s: ", step, state.t==0?"A":"T");
       print_opcode(&instruction);
 
       switch(instruction.opcode)
@@ -1925,16 +1926,16 @@ void step_machine(int steps)
             }
             else
                state.r[instruction.LDR_L.t] = data;
-            printf("Loaded literal %08x from %08x\n", data, address);
+            printf("Loaded literal 0x%08x from 0x%08x. Next instruction is %08x. state.t = %d\n", data, address, state.next_instruction, state.t);
             break;
          }
          case STR_I:
          {
             uint32_t offset_addr = state.r[instruction.STR_I.n] + (instruction.STR_I.add?(instruction.STR_I.imm32):(-instruction.STR_I.imm32));
             uint32_t address = instruction.STR_I.index?(offset_addr):state.r[instruction.STR_I.n];
-            if (instruction.STR_I.index && !instruction.STR_I.wback) printf(" %s, [%s + {%d}]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.imm32);
-            else if (instruction.STR_I.index && instruction.STR_I.wback) printf(" %s, [%s + %d]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.imm32);
-            else if (!instruction.STR_I.index && instruction.STR_I.wback) printf(" %s, [%s] + %d\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.imm32);
+            if (instruction.STR_I.index && !instruction.STR_I.wback) printf(" %s, [%s %s {%d}]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.add?"+":"-", instruction.STR_I.imm32);
+            else if (instruction.STR_I.index && instruction.STR_I.wback) printf(" %s, [%s %s %d]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.add?"+":"-", instruction.STR_I.imm32);
+            else if (!instruction.STR_I.index && instruction.STR_I.wback) printf(" %s, [%s] %s %d\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.add?"+":"-", instruction.STR_I.imm32);
             CHECK_CONDITION;
             write_mem(4, address, state.r[instruction.STR_I.t]);
             if (instruction.STR_I.wback)
@@ -2273,15 +2274,16 @@ void step_machine(int steps)
          case IT:
          {
             // This is quite complicated :(
-            if (instruction.IT.mask & 0b1000) printf("");
-            else if (instruction.IT.mask & 0b0100) printf("%s ", ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 3))?"t":"e");
-            else if (instruction.IT.mask & 0b0010) printf("%s%s ", ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 3))?"t":"e",
-                                                          ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 2))?"t":"e");
+            if (instruction.IT.mask == 0b1000) printf("");
+            else if ((instruction.IT.mask & 0b0111) == 0b0100) printf("%s ", ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 3))?"t":"e");
+            else if ((instruction.IT.mask & 0b0011) == 0b0010) printf("%s%s ", ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 3))?"t":"e",
+                                                                               ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 2))?"t":"e");
             else if (instruction.IT.mask & 0b0001) printf("%s%s%s ", ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 3))?"t":"e",
-                                                          ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 2))?"t":"e",
-                                                          ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 1))?"t":"e");
+                                                                     ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 2))?"t":"e",
+                                                                     ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 1))?"t":"e");
             printf("%s\n", condition_name[instruction.IT.firstcond]);
             state.itstate = (instruction.IT.firstcond << 4) | (instruction.IT.mask);
+            printf("itstate = %08x, %d\n", state.itstate, state.t);
             break;
          }
          default:
@@ -2299,7 +2301,6 @@ int main(int argc, char** argv)
    }
    register_stubs();
    load_executable(argv[1]);
-   return -1;
    state.next_instruction = state.PC;
    state.PC = 0;
    initialize_state();
