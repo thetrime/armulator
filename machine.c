@@ -951,8 +951,15 @@ int decode_instruction(instruction_t* instruction)
                   NOT_DECODED("TEQ_I");
                }
                else if (op == 8 && RdS != 31)
-               {
-                  NOT_DECODED("ADD_I");
+               {  // T3
+                  instruction->opcode = ADD_I;
+                  instruction->ADD_I.d = (word2 >> 8) & 15;
+                  instruction->ADD_I.n = (word) & 15;
+                  instruction->setflags = (word >> 4) & 1;
+                  instruction->ADD_I.imm32 = ThumbExpandImm(((word << 1) & 0xfff)| ((word2 >> 4) & 0xf00) | ((word2 & 0xff)));
+                  if ((instruction->ADD_I.d == 13) || (instruction->ADD_I.d == 15 && ((word2 >> 4) & 1) == 0) || instruction->ADD_I.n == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op == 8 && RdS == 15)
                {
@@ -1866,7 +1873,6 @@ void step_machine(int steps)
       assert(decode_instruction(&instruction));
       if (state.t == 1 && state.itstate != 0)
       {
-         printf("inside IT block...\n");
          // Update the condition based on itstate
          if (state.itstate != 0 && state.t == 1)
          {
@@ -1907,8 +1913,15 @@ void step_machine(int steps)
             if (instruction.LDR_I.wback)
                state.r[instruction.LDR_I.n] = offset_addr;
             if (instruction.LDR_I.t == 15)
+            {
                assert((address & 3) == 0);
-            state.r[instruction.LDR_I.t] = data;
+               printf("LDR will load PC with %08x from %08x\n", data, address);
+               LOAD_PC(data);
+            }
+            else
+            {
+               state.r[instruction.LDR_I.t] = data;
+            }
             break;
          }
          case LDR_L:
@@ -2283,7 +2296,6 @@ void step_machine(int steps)
                                                                      ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 1))?"t":"e");
             printf("%s\n", condition_name[instruction.IT.firstcond]);
             state.itstate = (instruction.IT.firstcond << 4) | (instruction.IT.mask);
-            printf("itstate = %08x, %d\n", state.itstate, state.t);
             break;
          }
          default:

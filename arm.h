@@ -67,6 +67,14 @@ static inline uint32_t ThumbExpandImm_C(uint32_t opcode, uint32_t carry_in, uint
     return imm32;
 }
 
+static inline uint32_t ThumbExpandImm(uint32_t opcode)
+{
+    // 'carry_in' argument to following function call does not affect the imm32 result.
+    uint32_t carry_in = 0;
+    uint8_t carry_out;
+    return ThumbExpandImm_C(opcode, carry_in, &carry_out);
+}
+
 static inline int BitCount(uint32_t in)
 {
    int j = 0;

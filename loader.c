@@ -1,6 +1,7 @@
 #include "loader.h"
 #include "machine.h"
 #include "map.h"
+#include "symtab.h"
 #include <unistd.h>
 
 //#define printf(...) (void)0
@@ -87,14 +88,6 @@ uint64_t read_uleb_integer(unsigned char** p)
    return result;
 }
 
-map_t* undefined_symbols = NULL;
-
-typedef struct
-{
-   char* name;
-   uint32_t address;
-} undefined_symbol_t;
-
 
 struct segment_list_t
 {
@@ -108,6 +101,8 @@ struct section_list_t
 {
    int section_number;
    uint32_t base_address;
+   uint32_t flags;
+   uint32_t size;
    struct section_list_t* next;   
 };
 typedef struct section_list_t section_list_t;
@@ -157,7 +152,7 @@ typedef struct breakpage_t breakpage_t;
 breakpage_t* break_pages = NULL;
 uint32_t current_page_offset = 0;
 
-void bind_sym(segment_list_t* segment_list, sym_t* sym)
+void bind_sym(char* current_file, segment_list_t* segment_list, sym_t* sym)
 {
    uint32_t address = 0;
    for (segment_list_t* node = segment_list; node; node = node->next)
@@ -191,15 +186,11 @@ void bind_sym(segment_list_t* segment_list, sym_t* sym)
    write_mem(4, break_pages->page_start + current_page_offset, BREAK32);
    current_page_offset += 4;
 #else
-   printf("   Need to find symbol %s\n", sym->name);
-   undefined_symbol_t* undef = malloc(sizeof(undefined_symbol_t));
-   undef->address = address;
-   undef->name = strdup(sym->name);   
-   map_put(undefined_symbols, sym->name, undef);
+   need_symbol(sym->name, address);
 #endif
 }
 
-void bind_symbols(segment_list_t* segment_list, char* mode, unsigned char* start, unsigned char* end)
+void bind_symbols(char* current_file, segment_list_t* segment_list, char* mode, unsigned char* start, unsigned char* end)
 {
    unsigned char* op;
    sym_t sym;
@@ -238,15 +229,15 @@ void bind_symbols(segment_list_t* segment_list, char* mode, unsigned char* start
             sym.addend = read_sleb_integer(&op);
             break;
          case BIND_DO_BIND:
-            bind_sym(segment_list, &sym);
+            bind_sym(current_file, segment_list, &sym);
             sym.offset += 4;
             break;
          case BIND_DO_BIND_ADD_ADDR_ULEB:
-            bind_sym(segment_list, &sym);
+            bind_sym(current_file, segment_list, &sym);
             sym.offset += 4 + read_uleb_integer(&op);
             break;
          case BIND_DO_BIND_ADD_ADDR_IMM_SCALED:
-            bind_sym(segment_list, &sym);
+            bind_sym(current_file, segment_list, &sym);
             sym.offset += 4 + (4 * ((*op) & 15));
             break;                     
          case BIND_ADD_ADDR_ULEB:
@@ -261,7 +252,7 @@ void bind_symbols(segment_list_t* segment_list, char* mode, unsigned char* start
             uint32_t skip = read_uleb_integer(&op);
             for (int j = 0; j < count; j++)
             {
-               bind_sym(segment_list, &sym);
+               bind_sym(current_file, segment_list, &sym);
                sym.offset += 4 + skip;
             }
          }
@@ -319,8 +310,11 @@ void free_section_list(section_list_t* section_list)
 
 void load_executable(char* filename)
 {
-   if (undefined_symbols == NULL)
-      undefined_symbols = alloc_map();
+   struct nlist* symbol_table = NULL;
+   char* string_table = NULL;
+   uint32_t* indirect_table = NULL;
+   uint32_t indirect_count = 0;
+
    segment_list_t* segment_list = NULL;
    section_list_t* section_list = NULL;   
    unsigned char* data;
@@ -387,8 +381,12 @@ void load_executable(char* filename)
                section->next = section_list;
                section->base_address = s->addr;
                section->section_number = section_number;
+               section->flags = s->flags;
+               section->size = s->size;
                section_number++;
                section_list = section;
+               if (s->reserved1 != 0)
+                  printf("Section %s has reserved1: %08x and base %08x\n", s->sectname, s->reserved1, s->addr);               
             }
             segment_list_t* node = malloc(sizeof(segment_list_t));
             node->next = segment_list;
@@ -402,55 +400,45 @@ void load_executable(char* filename)
          {
             struct symtab_command* c = (struct symtab_command*)command;
             printf("Got symtab containing %d symbols\n", c->nsyms);
+            symbol_table = (struct nlist*)(&data[base + c->symoff]);
+            string_table = (char*)&data[base + c->stroff];
             for (int j = 0; j < c->nsyms; j++)
             {
-               struct nlist* index_ptr = (struct nlist*)(&data[base + c->symoff + j*sizeof(struct nlist)]);
+               struct nlist* index_ptr = &symbol_table[j];
                if ((index_ptr->n_type & N_TYPE) == N_UNDF)
                {
                   // Undefined symbol
-                  //printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[base + c->stroff + index_ptr->n_un.n_strx]);
+                  // printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[base + c->stroff + index_ptr->n_un.n_strx]);
+                  // printf("   **** Need to find symbol #%d (%s) to fill in stub at %08x in %s\n", j, &data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value, filename);
                }
                else
                {
-                  // FIXME: scan for pending unresolved symbols and store index_ptr->n_value at the appropriate memory address 
                   printf("%s provides symbol %s at address %08x\n", filename, &data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
 #ifndef EXTERNAL_SYMBOLS_ON_HOST
-                  undefined_symbol_t* symbol;
-                  if (map_get(undefined_symbols, (char*)&data[base + c->stroff + index_ptr->n_un.n_strx], (void**)&symbol) == 1)
-                  {
-                     if (index_ptr->n_desc & N_ARM_THUMB_DEF)
-                     {
-                        // Set lowest bit to trigger setting thumb mode in interworking branch
-                        write_mem(4, symbol->address, (index_ptr->n_value | 1));
-                     }
-                     else
-                     {
-                        write_mem(4, symbol->address, index_ptr->n_value);
-                     }
-                  }
+                  if (index_ptr->n_desc & N_ARM_THUMB_DEF)
+                     found_symbol((char*)&data[base + c->stroff + index_ptr->n_un.n_strx], (index_ptr->n_value | 1));
                   else
-                  {
-                     printf("Symbol %s does not appear to be needed\n", &data[base + c->stroff + index_ptr->n_un.n_strx]);
-                  }
+                     found_symbol((char*)&data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
 #endif
                }
             }
-
             break;
          }
          case LC_DYSYMTAB:
          {
             struct dysymtab_command* c = (struct dysymtab_command*)command;
             printf("Got dysymtab containing %d indirect symbols, %d undefined symbols, %d local symbols\n", c->nindirectsyms, c->nundefsym, c->nlocalsym);
+            indirect_table = (uint32_t*)&data[base + c->indirectsymoff];
+            indirect_count = c->nindirectsyms;
             break;
          }
          case LC_DYLD_INFO_ONLY:
          {
             struct dyld_info_command* c = (struct dyld_info_command*)command;
             printf("Binding symbols from %s (%d bytes of binding opcodes)\n", filename, c->bind_size);
-            bind_symbols(segment_list, "external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
+            bind_symbols(filename, segment_list, "external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
             printf("Binding lazy symbols from  %s (%d bytes of binding opcodes)\n", filename, c->lazy_bind_size);
-            bind_symbols(segment_list, "lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
+            bind_symbols(filename, segment_list, "lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
             break;
          }
          case LC_ID_DYLIB:
@@ -564,6 +552,30 @@ void load_executable(char* filename)
             printf("Got other type 0x%x\n", command->cmd);
       }
       command = (struct load_command*)((char*)command + command->cmdsize);
+   }
+
+   // Ok, all loaded. Only now can we process the indirect symbols!
+   printf("Resolving indirect symbols for %s\n", filename);
+   for (section_list_t* section = section_list; section; section = section->next)
+   {
+      if (section->flags == S_LAZY_SYMBOL_POINTERS)
+      {
+         assert(indirect_table != NULL);             // Must have a dsymtab or we will not have a good time
+         assert(symbol_table != NULL);               // Must have a symtab or we will not have a good time either
+         uint32_t indirect_symbols_this_section = section->size / sizeof(uint32_t);
+         for (int j = 0; j < indirect_symbols_this_section; j++)
+         {            
+            if (indirect_table[j] == INDIRECT_SYMBOL_ABS)
+               continue;
+            if (indirect_table[j] == (INDIRECT_SYMBOL_ABS | INDIRECT_SYMBOL_LOCAL))
+               continue;
+            if (indirect_table[j] == INDIRECT_SYMBOL_LOCAL)
+               continue;         
+            struct nlist* ptr = &symbol_table[indirect_table[j]];
+            //printf("Indirect symbol %d = %s at %08lx\n", j, &string_table[ptr->n_un.n_strx], section->base_address + (sizeof(uint32_t) * j));
+            need_symbol(&string_table[ptr->n_un.n_strx], section->base_address + (sizeof(uint32_t) * j));
+         }
+      }
    }
    free_segment_list(segment_list);
    free_section_list(section_list);
