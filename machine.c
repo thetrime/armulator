@@ -979,8 +979,13 @@ int decode_instruction(instruction_t* instruction)
                   NOT_DECODED("SUB_I");
                }
                else if (op == 13 && RdS == 31)
-               {
-                  NOT_DECODED("CMP_I");
+               {  // T2
+                  instruction->opcode = CMP_I;
+                  instruction->CMP_I.n = word & 15;
+                  instruction->CMP_I.imm32 = ThumbExpandImm(((word << 1) & 0xfff)| ((word2 >> 4) & 0xf00) | ((word2 & 0xff)));
+                  if (instruction->CMP_I.n == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op == 14)
                {
@@ -2288,7 +2293,7 @@ void step_machine(int steps)
          case IT:
          {
             // This is quite complicated :(
-            if (instruction.IT.mask == 0b1000) printf("");
+            if (instruction.IT.mask == 0b1000) printf(" ");
             else if ((instruction.IT.mask & 0b0111) == 0b0100) printf("%s ", ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 3))?"t":"e");
             else if ((instruction.IT.mask & 0b0011) == 0b0010) printf("%s%s ", ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 3))?"t":"e",
                                                                                ((instruction.IT.firstcond & 1) == (instruction.IT.mask >> 2))?"t":"e");
