@@ -7,6 +7,7 @@
 #include "loader.h"
 #include "stubs.h"
 #include "machine.h"
+#include "symtab.h"
 
 typedef enum
 {
@@ -2313,6 +2314,7 @@ int main(int argc, char** argv)
    }
    register_stubs();
    load_executable(argv[1]);
+   dump_symtab();
    state.next_instruction = state.PC;
    state.PC = 0;
    initialize_state();

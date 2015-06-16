@@ -413,7 +413,7 @@ void load_executable(char* filename)
                }
                else
                {
-                  printf("%s provides symbol %s at address %08x\n", filename, &data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
+                  //printf("%s provides symbol %s at address %08x\n", filename, &data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
 #ifndef EXTERNAL_SYMBOLS_ON_HOST
                   if (index_ptr->n_desc & N_ARM_THUMB_DEF)
                      found_symbol((char*)&data[base + c->stroff + index_ptr->n_un.n_strx], (index_ptr->n_value | 1));
