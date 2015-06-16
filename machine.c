@@ -2318,7 +2318,7 @@ int main(int argc, char** argv)
    state.next_instruction = state.PC;
    state.PC = 0;
    initialize_state();
-   printf("Memory mapped. Starting execution at %08x\n", state.PC);
+   printf("Memory mapped. Starting execution at %08x\n", state.next_instruction);
    step_machine(150);
    printf("Finished stepping\n");
    return 0;
