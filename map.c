@@ -101,3 +101,14 @@ uint32_t map_size(map_t* m)
 {
    return m->usage;
 }
+
+void forall(map_t* m, void (*fn)(char*, void*))
+{
+   for (int i = 0; i < m->size; i++)
+   {
+      for (map_entry_t* e = m->entries[i]; e; e = e->next)
+      {
+         fn(e->key, e->value);
+      }
+   }
+}
