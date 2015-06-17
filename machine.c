@@ -956,8 +956,9 @@ int decode_instruction(instruction_t* instruction)
                   instruction->opcode = ADD_I;
                   instruction->ADD_I.d = (word2 >> 8) & 15;
                   instruction->ADD_I.n = (word) & 15;
-                  instruction->setflags = (word >> 4) & 1;
-                  instruction->ADD_I.imm32 = ThumbExpandImm(((word << 1) & 0xfff)| ((word2 >> 4) & 0xf00) | ((word2 & 0xff)));
+                  instruction->setflags = (word >> 4) & 1;                  
+                  // Note that ThumbExpandImm takes a 32 bit instruction and extracts out the right bits for us. We do not need to juggle imm8, imm3 and i
+                  instruction->ADD_I.imm32 = ThumbExpandImm((word << 16) | word2);
                   if ((instruction->ADD_I.d == 13) || (instruction->ADD_I.d == 15 && ((word2 >> 4) & 1) == 0) || instruction->ADD_I.n == 15)
                      UNPREDICTABLE;
                   DECODED;
@@ -982,7 +983,8 @@ int decode_instruction(instruction_t* instruction)
                {  // T2
                   instruction->opcode = CMP_I;
                   instruction->CMP_I.n = word & 15;
-                  instruction->CMP_I.imm32 = ThumbExpandImm(((word << 1) & 0xfff)| ((word2 >> 4) & 0xf00) | ((word2 & 0xff)));
+                  // Note that ThumbExpandImm takes a 32 bit instruction and extracts out the right bits for us. We do not need to juggle imm8, imm3 and i
+                  instruction->CMP_I.imm32 = ThumbExpandImm((word << 16) | word2);
                   if (instruction->CMP_I.n == 15)
                      UNPREDICTABLE;
                   DECODED;
