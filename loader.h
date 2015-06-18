@@ -10,7 +10,7 @@
 typedef struct
 {
    char* symbol_name;
-   uint32_t (*_stub)();
+   uint32_t (*handler)();
 } breakpoint_t;
 
 breakpoint_t* find_breakpoint(uint32_t pc);
@@ -26,5 +26,6 @@ struct stub_t
 typedef struct stub_t stub_t;
 
 void register_stub(char* stub_name, uint32_t(*_stub)());
+void prepare_loader();
 
 #define VPAGE_SIZE 4096

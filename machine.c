@@ -7,6 +7,7 @@
 #include "loader.h"
 #include "stubs.h"
 #include "machine.h"
+#include "hardware.h"
 #include "symtab.h"
 
 typedef enum
@@ -37,10 +38,12 @@ typedef enum
    BKPT,
    STRB_I,
    IT,
-   BX
+   BX,
+   AND_I,
+   STR_R
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str"};
 
 typedef enum
 {
@@ -145,9 +148,20 @@ typedef struct
       } STRB_I;
       struct
       {
+         uint8_t t, n, m, index, add, wback;
+         shift_type_t shift_t;
+         int32_t shift_n;
+      } STR_R;
+      struct
+      {
          uint8_t n, d;
          int32_t imm32;
       } ADD_I;
+      struct
+      {
+         uint8_t n, d, c;
+         int32_t imm32;
+      } AND_I;
       struct
       {
          uint8_t n, d, c;
@@ -278,10 +292,10 @@ uint32_t read_mem(uint8_t count, uint32_t addr)
 
 void write_mem(uint8_t count, uint32_t addr, uint32_t value)
 {
+   //printf("Writing 0x%08x to %08x\n", value, addr);
    unsigned char* physical = map_addr(addr);
    if (count == 4)
    {
-      //printf("Writing 0x%08x to %08x\n", value, addr);
       physical[0] = value & 0xff;
       physical[1] = (value >> 8) & 0xff;
       physical[2] = (value >> 16) & 0xff;
@@ -906,13 +920,25 @@ int decode_instruction(instruction_t* instruction)
                uint8_t Rn = word & 15;
                uint8_t RdS = (((word2 >> 8) & 15) << 1) | ((word >> 4) & 1);
                if (op == 0 && RdS != 31)
-               {
-                  NOT_DECODED("AND_I");
+               {  // T1
+                  instruction->opcode = AND_I;
+                  instruction->setflags = (word >> 4) & 1;
+                  instruction->AND_I.n = word & 15;
+                  instruction->AND_I.d = (word2 >> 8) & 15;
+                  instruction->AND_I.imm32 = ThumbExpandImm_C(((word << 16) | word2), state.c, &instruction->TST_I.c);
+                  if (instruction->AND_I.d == 13)
+                     UNPREDICTABLE;
+                  if (instruction->AND_I.d == 15 && instruction->setflags)
+                     UNPREDICTABLE;
+                  if (instruction->AND_I.n == 13 || instruction->AND_I.n == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op == 0 && RdS == 31)
-               {
+               {  // T1
                   instruction->opcode = TST_I;
                   instruction->TST_I.n = word & 15;
+                  // FIXME: This is probably not right!
                   instruction->TST_I.imm32 = ThumbExpandImm_C((word2 & 255) | ((word2 >> 4) & 0x700) | ((word << 1) & 0x800), state.c, &instruction->TST_I.c);
                   assert(instruction->TST_I.n != 13 && instruction->TST_I.n != 15);
                   DECODED;
@@ -943,6 +969,7 @@ int decode_instruction(instruction_t* instruction)
                   instruction->EOR_I.d = (word2 >> 8) & 15;
                   instruction->EOR_I.n = word & 15;
                   instruction->setflags = (word >> 4) & 1;
+                  // FIXME: This is probably not right!
                   instruction->EOR_I.imm32 = ThumbExpandImm_C((word2 & 255) | ((word2 >> 4) & 0x700) | ((word << 1) & 0x800), state.c, &instruction->EOR_I.c);
                   assert(!(instruction->EOR_I.d == 13 || (instruction->EOR_I.d == 15 && instruction->setflags == 0) || instruction->EOR_I.n == 13 || instruction->EOR_I.n == 15));
                   DECODED;
@@ -1248,8 +1275,19 @@ int decode_instruction(instruction_t* instruction)
                   NOT_DECODED("STR_I"); 
                }
                else if (op1 == 0b010 && op2 == 0)
-               {
-                  NOT_DECODED("STR_R");
+               {  // T2
+                  instruction->opcode = STR_R;
+                  instruction->STR_R.t = (word2 >> 12) & 15;
+                  instruction->STR_R.n = word & 15;
+                  instruction->STR_R.m = word2 & 15;
+                  instruction->STR_R.index = 1;
+                  instruction->STR_R.add = 1;
+                  instruction->STR_R.wback = 0;
+                  instruction->STR_R.shift_t = LSL;
+                  instruction->STR_R.shift_n = (word2 >> 4) & 3;
+                  if (instruction->STR_R.t == 15 || instruction->STR_R.m == 13 || instruction->STR_R.m == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op1 == 0b010 && ((op2 & 0b111100) == 0b111000))
                {
@@ -1376,8 +1414,15 @@ int decode_instruction(instruction_t* instruction)
                NOT_DECODED("SUB_R");
             }
             else if (opcode == 0b01110)
-            {
-               NOT_DECODED("ADD_I");
+            {  // T1
+               instruction->opcode = ADD_I;
+               instruction->ADD_R.d = word & 7;
+               instruction->ADD_R.n = (word >> 3) & 7;
+               instruction->ADD_R.m = (word >> 6) & 7;
+               instruction->ADD_R.shift_t = LSL;
+               instruction->ADD_R.shift_n = 0;
+               instruction->setflags = (state.itstate == 0);
+               DECODED;
             }
             else if (opcode == 0b01111)
             {
@@ -1923,7 +1968,7 @@ void step_machine(int steps)
             if (instruction.LDR_I.t == 15)
             {
                assert((address & 3) == 0);
-               printf("LDR will load PC with %08x from %08x\n", data, address);
+               //printf("LDR will load PC with %08x from %08x\n", data, address);
                LOAD_PC(data);
             }
             else
@@ -1947,14 +1992,20 @@ void step_machine(int steps)
             }
             else
                state.r[instruction.LDR_L.t] = data;
-            printf("Loaded literal 0x%08x from 0x%08x. Next instruction is %08x. state.t = %d\n", data, address, state.next_instruction, state.t);
+            //printf("Loaded literal 0x%08x from 0x%08x. Next instruction is %08x. state.t = %d\n", data, address, state.next_instruction, state.t);
             break;
          }
          case STR_I:
          {
             uint32_t offset_addr = state.r[instruction.STR_I.n] + (instruction.STR_I.add?(instruction.STR_I.imm32):(-instruction.STR_I.imm32));
             uint32_t address = instruction.STR_I.index?(offset_addr):state.r[instruction.STR_I.n];
-            if (instruction.STR_I.index && !instruction.STR_I.wback) printf(" %s, [%s %s {%d}]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.add?"+":"-", instruction.STR_I.imm32);
+            if (instruction.STR_I.index && !instruction.STR_I.wback)
+            {
+               if (instruction.STR_I.imm32 == 0)
+                  printf(" %s, [%s]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n]);
+               else
+                  printf(" %s, [%s %s {%d}]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.add?"+":"-", instruction.STR_I.imm32);
+            }
             else if (instruction.STR_I.index && instruction.STR_I.wback) printf(" %s, [%s %s %d]\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.add?"+":"-", instruction.STR_I.imm32);
             else if (!instruction.STR_I.index && instruction.STR_I.wback) printf(" %s, [%s] %s %d\n", reg_name[instruction.STR_I.t], reg_name[instruction.STR_I.n], instruction.STR_I.add?"+":"-", instruction.STR_I.imm32);
             CHECK_CONDITION;
@@ -1976,6 +2027,25 @@ void step_machine(int steps)
                state.r[instruction.STRB_I.n] = offset_addr;
             break;
          }
+         case STR_R:
+         {
+            uint32_t offset;
+            uint32_t data;
+            uint8_t carry_out;
+            uint8_t overflow_out;
+            if (instruction.STR_R.shift_t == LSL && instruction.STR_R.shift_n == 0) printf(" %s, %s, %s\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m]);
+            else printf(" %s, [%s, %s %s %d]\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m], shift_name[instruction.STR_R.shift_t], instruction.STR_R.shift_n);
+            CHECK_CONDITION;
+            Shift(32, state.r[instruction.STR_R.m], instruction.STR_R.shift_t, instruction.STR_R.shift_n, state.c, &offset);
+            uint32_t offset_address = state.r[instruction.STR_R.n] + (instruction.LDRB_I.add?offset:(-offset));
+            uint32_t address = instruction.STR_R.index?offset_address:state.r[instruction.STR_R.n];
+            data = state.r[instruction.STR_R.t];
+            if (state.t == 0 || (address & 3) == 0)
+               write_mem(4, address, data);
+            else
+               assert(0 && "Garbage write");            
+            break;
+         }
          case ADD_I:
          {
             printf(" %s, %s, #%d\n", reg_name[instruction.ADD_I.d], reg_name[instruction.ADD_I.n], instruction.ADD_I.imm32);
@@ -1994,6 +2064,22 @@ void step_machine(int steps)
             }
             break;
          }
+         case AND_I:
+         {
+            printf(" %s, %s, #0x%x\n", reg_name[instruction.AND_I.d], reg_name[instruction.AND_I.n], instruction.AND_I.imm32);
+            CHECK_CONDITION;
+            uint32_t result;
+            result = state.r[instruction.AND_I.n] & instruction.AND_I.imm32;         
+            state.r[instruction.AND_I.d] = result;
+            if (instruction.setflags && instruction.AND_I.d != 15)
+            {
+               state.n = (result >> 31) & 1;
+               state.z = (result == 0);
+               state.c = instruction.AND_I.c;
+            }
+            break;
+         }
+
          case EOR_I:
          {
             printf(" %s, %s, #%d\n", reg_name[instruction.EOR_I.d], reg_name[instruction.EOR_I.n], instruction.EOR_I.imm32);
@@ -2070,7 +2156,7 @@ void step_machine(int steps)
          case CMP_I:
          {
             uint32_t result;
-            printf(" %s, %d\n", reg_name[instruction.CMP_I.n], instruction.CMP_I.imm32);
+            printf(" %s, #0x%x\n", reg_name[instruction.CMP_I.n], instruction.CMP_I.imm32);
             CHECK_CONDITION;
             AddWithCarry(state.r[instruction.CMP_I.n], ~instruction.CMP_I.imm32, 1, &result, &state.c, &state.v);
             state.n = (result >> 31) & 1;
@@ -2110,7 +2196,7 @@ void step_machine(int steps)
             printf(" %s\n", reg_name[instruction.BX.m]);
             CHECK_CONDITION;
             uint32_t address = state.r[instruction.BX.m];
-            printf("Address: %08x\n", address);
+            //printf("Address: %08x\n", address);
             if ((address & 1) == 1)
             {
                state.t = 1;
@@ -2278,10 +2364,10 @@ void step_machine(int steps)
          {
             printf("\n");
             breakpoint_t* breakpoint = find_breakpoint(instruction.source_address);
-            if (breakpoint->_stub != NULL)
+            if (breakpoint->handler != NULL)
             {
                printf("Calling stub for %s\n", breakpoint->symbol_name);
-               state.r[0] = breakpoint->_stub();
+               state.r[0] = breakpoint->handler();
                printf("Returning from stub for %s\n", breakpoint->symbol_name);
                LOAD_PC(state.LR);
                break;
@@ -2319,9 +2405,11 @@ int main(int argc, char** argv)
       printf("Usage: %s <executable>\n", argv[0]);
       return -1;
    }
+   prepare_loader();
    register_stubs();
    load_executable(argv[1]);
    dump_symtab();
+   configure_hardware();   
    state.next_instruction = state.PC;
    state.PC = 0;
    initialize_state();

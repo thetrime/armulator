@@ -53,3 +53,16 @@ __stub _MGCopyAnswer()
 {
    return 0;
 }
+
+
+__stub _OSSpinLockLock()
+{
+   /*
+   if ((*0xffff1020 & 0x9000) == 0x1000)
+      return = *0x3f01213c;
+   else if (*0xffff1020 == 0x8000)
+      return *0x3f012134;
+   else
+      return *0x3f012138;
+   */
+}

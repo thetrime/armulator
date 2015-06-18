@@ -119,37 +119,30 @@ typedef struct
    char* name;
 } sym_t;
 
-struct breakpage_t
-{
-   uint32_t page_start;
-   uint32_t page_end;
-   breakpoint_t* breakpoints[VPAGE_SIZE/4];
-   struct breakpage_t* next;
-};
 
-stub_t* stubs = NULL;
+uint32_t next_break = 0xa0000000;
+map_t* breakpoints = NULL;
 
 void register_stub(char* stub_name, uint32_t(_stub)())
 {
-   stub_t* n = malloc(sizeof(stub_t));
-   n->next = stubs;
-   stubs = n;
-   n->stub_name = strdup(stub_name);
-   n->_stub = _stub;
-}
-
-uint32_t (*find_stub(char* stub_name))()
-{
-   for (stub_t* s = stubs; s; s = s->next)
+   // Make a breakpoint. Not sure where to put this, so lets just say we start at 0xa0000000?
+   if (next_break % VPAGE_SIZE == 0)
    {
-      if (strcmp(stub_name, s->stub_name) == 0)
-         return s->_stub;
+      unsigned char* page = malloc(VPAGE_SIZE);
+      map_memory(page, next_break, VPAGE_SIZE);
    }
-   return NULL;
+   write_mem(4, next_break, BREAK32);
+   found_symbol(stub_name, next_break);
+   breakpoint_t* breakpoint = malloc(sizeof(breakpoint_t));
+   breakpoint->symbol_name = strdup(stub_name);
+   breakpoint->handler = _stub;
+   uint32_t* key = malloc(sizeof(uint32_t));
+   *key = next_break;
+   map_put(breakpoints, key, breakpoint);
+   next_break += 4;
 }
 
-typedef struct breakpage_t breakpage_t;
-breakpage_t* break_pages = NULL;
+
 uint32_t current_page_offset = 0;
 
 void bind_sym(char* current_file, segment_list_t* segment_list, sym_t* sym)
@@ -163,31 +156,7 @@ void bind_sym(char* current_file, segment_list_t* segment_list, sym_t* sym)
          break;
       }
    }
-#ifdef EXTERNAL_SYMBOLS_ON_HOST
-   if ((current_page_offset % VPAGE_SIZE) == 0) // If the offset is PAGE_SIZE (or 0) then we need a new page
-   {
-      current_page_offset = 0;
-      breakpage_t* page = malloc(sizeof(breakpage_t));
-      page->next = break_pages;
-      break_pages = page;
-      break_pages->page_start = alloc_page();
-      break_pages->page_end = break_pages->page_start + VPAGE_SIZE;
-   }
-   breakpoint_t* breakpoint = malloc(sizeof(breakpoint_t));
-   breakpoint->symbol_name = strdup(sym->name);
-   breakpoint->_stub = find_stub(sym->name);
-   break_pages->breakpoints[current_page_offset/4] = breakpoint;
-   printf("%s bind: %s to (Segment %d, offset %016llx, type %d) %08x\n", sym->mode, sym->name, sym->segment, sym->offset, sym->type, address);
-   //printf("Writing BREAK to %08x\n", break_pages->page_start + current_page_offset);
-   //printf("Writing %08x to %08x\n", break_pages->page_start + current_page_offset, address);
-   // Write the address of the stub code to the bound address
-   write_mem(4, address, break_pages->page_start + current_page_offset);
-   // and write the actual code for the stub to the address of the stub code
-   write_mem(4, break_pages->page_start + current_page_offset, BREAK32);
-   current_page_offset += 4;
-#else
    need_symbol(sym->name, address);
-#endif
 }
 
 void bind_symbols(char* current_file, segment_list_t* segment_list, char* mode, unsigned char* start, unsigned char* end)
@@ -478,6 +447,8 @@ void load_executable(char* filename)
          case LC_THREAD:
             printf("Thread state given. Not implemented\n");
             break;
+         case LC_REEXPORT_DYLIB: // Fallthrough
+            printf("Reexporting....\n");
          case LC_LOAD_DYLIB:
          {
             struct dylib_command* c = (struct dylib_command*)command;
@@ -497,19 +468,22 @@ void load_executable(char* filename)
                if (dylib_name != NULL)
                {
                   printf("Found at %s\n", dylib_name);
-                  // Load here
-                  load_executable(dylib_name);
-                  free(dylib_name);
                }
                else
                {
                   printf("Failed to find dylib\n");
                   exit(-1);
                }
+               // First mark it as loaded to avoid cycles
                loaded_dylib_t* x = malloc(sizeof(loaded_dylib_t));
                x->dylib_name = strdup(((char*)command) + c->dylib.name.offset);
                x->next = loaded_dylibs;
-               loaded_dylibs = x;                  
+               loaded_dylibs = x;
+               
+               // Load here
+               load_executable(dylib_name);
+               free(dylib_name);
+
             }
             break;
          }
@@ -541,11 +515,6 @@ void load_executable(char* filename)
          {
             struct version_min_command* c = (struct version_min_command*)command;
             printf("Executable requires version %d.%d.%d or greater, and was compiled with SDK %d.%d.%d\n", (c->version >> 16) & 0xffff, (c->version >> 8) & 0xff, (c->version >> 0) & 0xff, (c->sdk >> 16) & 0xffff, (c->sdk >> 8) & 0xff, (c->sdk >> 0) & 0xff);
-            break;
-         }
-         case LC_REEXPORT_DYLIB:
-         {
-            printf("Rexport dylib. Ignored\n");
             break;
          }
          default:
@@ -582,14 +551,35 @@ void load_executable(char* filename)
    free(data);
 }
 
+
 breakpoint_t* find_breakpoint(uint32_t pc)
 {
-   for (breakpage_t* page = break_pages; page; page = page->next)
+   breakpoint_t* breakpoint;
+   if (map_get(breakpoints, &pc, (void**)&breakpoint))
    {
-      if (page->page_start <= pc && page->page_end >= pc)
-      {
-         return page->breakpoints[(pc - page->page_start)/4];
-      }
+      printf("  *** %s\n", breakpoint->symbol_name);
+      return breakpoint;
    }
    assert(0 && "Illegal breakpoint");
+}
+
+uint32_t hash_uint32(void* x)
+{
+   return *((uint32_t*)x);
+}
+
+int comparator_uint32(void* x, void* y)
+{
+   return *((uint32_t*)x) - *((uint32_t*)y);
+}
+
+void free_breakpoint(void* ptr)
+{
+   breakpoint_t* breakpoint = (breakpoint_t*)ptr;
+   free(breakpoint->symbol_name);
+}
+
+void prepare_loader()
+{
+   breakpoints = alloc_map(free_breakpoint, hash_uint32, comparator_uint32);
 }
