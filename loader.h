@@ -15,6 +15,7 @@ typedef struct
 
 breakpoint_t* find_breakpoint(uint32_t pc);
 void load_executable(char* filename);
+void parse_executable(unsigned char* data, char* filename);
 
 struct stub_t
 {

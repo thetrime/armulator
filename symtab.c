@@ -78,7 +78,7 @@ void need_symbol(char* symbol_name, uint32_t target)
       entry->bindings->target = target;
       map_put(symtab, strdup(symbol_name), entry);
    }
-   else
+   else if (entry->value != 0)
    {
       printf("  Request for symbol %s to fill in stub at %08x ---> We already have this symbol! %08x\n", symbol_name, target, entry->value);
       bind_symbol(target, entry->value);

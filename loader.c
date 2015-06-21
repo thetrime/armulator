@@ -2,6 +2,7 @@
 #include "machine.h"
 #include "map.h"
 #include "symtab.h"
+#include "dyld_cache.h"
 #include <unistd.h>
 
 //#define printf(...) (void)0
@@ -233,7 +234,7 @@ void bind_symbols(char* current_file, segment_list_t* segment_list, char* mode, 
    }
 }
 
-char* sim_chroot = "armv7";
+char* sim_chroot = "armv7_5";
 
 char* find_dylib(char* base, char* suggested_path)
 {
@@ -277,7 +278,8 @@ void free_section_list(section_list_t* section_list)
    }
 }
 
-void load_executable(char* filename)
+
+void parse_executable(unsigned char* data, char* filename)
 {
    struct nlist* symbol_table = NULL;
    char* string_table = NULL;
@@ -286,41 +288,12 @@ void load_executable(char* filename)
 
    segment_list_t* segment_list = NULL;
    section_list_t* section_list = NULL;   
-   unsigned char* data;
    struct load_command* command;
    struct mach_header* header;
-   FILE* file = fopen(filename, "rb");
-   size_t file_length;
-   fseek(file, 0, SEEK_END);
-   file_length = ftell(file);
-   fseek(file, 0, SEEK_SET);
-   data = malloc(file_length);
-   fread(data, file_length, 1, file);
-   fclose(file);
    header = (struct mach_header*)data;
-   uint32_t base = 0;
-   if (header->magic == FAT_CIGAM)
-   {
-      // Universal binary. Lets find the armv7 one
-      struct fat_header* fat = (struct fat_header*)data;
-      printf("Universal binary supporting %d different CPU architectures\n", byteswap32(fat->nfat_arch));
-      uint32_t count = byteswap32(fat->nfat_arch);
-      uint8_t arch_found = 0;
-      for (int i = 0; i < count && !arch_found; i++)
-      {
-         struct fat_arch* arch = (struct fat_arch*)(data + sizeof(struct fat_header) + (i*(sizeof(struct fat_arch))));
-         if (arch->cputype == byteswap32(CPU_TYPE_ARM))
-         {
-            header = (struct mach_header*)&data[byteswap32(arch->offset)];
-            base = byteswap32(arch->offset);
-            arch_found = 1;
-            break;
-         }
-      }
-      assert(arch_found);
-   }
+      
    assert(header->magic == MH_MAGIC);
-   command = (struct load_command*)(data + base + sizeof(struct mach_header));
+   command = (struct load_command*)(data + sizeof(struct mach_header));
    uint32_t initial_pc = 0;
    int segment_number = 0;
    int section_number = 1;
@@ -337,14 +310,14 @@ void load_executable(char* filename)
             {
                unsigned char* chunk = NULL;
                struct section* s = (struct section*)(((char*)command) + sizeof(struct segment_command) + j*sizeof(struct section));
-               //printf("   Got section %s in segment %s (mapped to %08x)\n", s->sectname, c->segname, s->addr);
+               printf("   Got section #%d (%s) in segment %s (mapped to %08x)\n", section_number, s->sectname, c->segname, s->addr);
                if ((strcmp(c->segname, "__TEXT") == 0) && (strcmp(s->sectname, "__text") == 0))
                {
                   initial_pc = s->addr;
                }
                chunk = calloc(s->size, 1);
                if (!((s->flags & S_ZEROFILL) == S_ZEROFILL))
-                 memcpy(chunk, &data[base + s->offset], s->size);
+                 memcpy(chunk, &data[s->offset], s->size);
                map_memory(chunk, s->addr, s->size);
                section_list_t* section = malloc(sizeof(section_list_t));
                section->next = section_list;
@@ -369,26 +342,24 @@ void load_executable(char* filename)
          {
             struct symtab_command* c = (struct symtab_command*)command;
             printf("Got symtab containing %d symbols\n", c->nsyms);
-            symbol_table = (struct nlist*)(&data[base + c->symoff]);
-            string_table = (char*)&data[base + c->stroff];
+            symbol_table = (struct nlist*)(&data[c->symoff]);
+            string_table = (char*)&data[c->stroff];
             for (int j = 0; j < c->nsyms; j++)
             {
                struct nlist* index_ptr = &symbol_table[j];
                if ((index_ptr->n_type & N_TYPE) == N_UNDF)
                {
                   // Undefined symbol
-                  // printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[base + c->stroff + index_ptr->n_un.n_strx]);
-                  // printf("   **** Need to find symbol #%d (%s) to fill in stub at %08x in %s\n", j, &data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value, filename);
+                  // printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[c->stroff + index_ptr->n_un.n_strx]);
+                  // printf("   **** Need to find symbol #%d (%s) to fill in stub at %08x in %s\n", j, &data[c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value, filename);
                }
                else
                {
-                  //printf("%s provides symbol %s at address %08x\n", filename, &data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
-#ifndef EXTERNAL_SYMBOLS_ON_HOST
+               printf("%s provides symbol %s at address %08x with type %02x and attributes %04x section is #%d\n", filename, &data[c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value, index_ptr->n_type, index_ptr->n_desc, index_ptr->n_sect);
                   if (index_ptr->n_desc & N_ARM_THUMB_DEF)
-                     found_symbol((char*)&data[base + c->stroff + index_ptr->n_un.n_strx], (index_ptr->n_value | 1));
+                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx], (index_ptr->n_value | 1));
                   else
-                     found_symbol((char*)&data[base + c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
-#endif
+                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
                }
             }
             break;
@@ -397,7 +368,7 @@ void load_executable(char* filename)
          {
             struct dysymtab_command* c = (struct dysymtab_command*)command;
             printf("Got dysymtab containing %d indirect symbols, %d undefined symbols, %d local symbols\n", c->nindirectsyms, c->nundefsym, c->nlocalsym);
-            indirect_table = (uint32_t*)&data[base + c->indirectsymoff];
+            indirect_table = (uint32_t*)&data[c->indirectsymoff];
             indirect_count = c->nindirectsyms;
             break;
          }
@@ -405,9 +376,11 @@ void load_executable(char* filename)
          {
             struct dyld_info_command* c = (struct dyld_info_command*)command;
             printf("Binding symbols from %s (%d bytes of binding opcodes)\n", filename, c->bind_size);
-            bind_symbols(filename, segment_list, "external", &data[base + c->bind_off], &data[base + c->bind_off + c->bind_size]);
+            bind_symbols(filename, segment_list, "external", &data[c->bind_off], &data[c->bind_off + c->bind_size]);
             printf("Binding lazy symbols from  %s (%d bytes of binding opcodes)\n", filename, c->lazy_bind_size);
-            bind_symbols(filename, segment_list, "lazy", &data[base + c->lazy_bind_off], &data[base + c->lazy_bind_off + c->lazy_bind_size]);
+            bind_symbols(filename, segment_list, "lazy", &data[c->lazy_bind_off], &data[c->lazy_bind_off + c->lazy_bind_size]);
+            printf("Exports from %s start at 0x%x\n", filename, c->export_off);
+            //exports_trie = c->export_off;
             break;
          }
          case LC_ID_DYLIB:
@@ -541,15 +514,61 @@ void load_executable(char* filename)
             if (indirect_table[j] == INDIRECT_SYMBOL_LOCAL)
                continue;         
             struct nlist* ptr = &symbol_table[indirect_table[j]];
-            //printf("Indirect symbol %d = %s at %08lx\n", j, &string_table[ptr->n_un.n_strx], section->base_address + (sizeof(uint32_t) * j));
+            printf("%s needs symbol %s at %08lx\n", filename, &string_table[ptr->n_un.n_strx], section->base_address + (sizeof(uint32_t) * j));
             need_symbol(&string_table[ptr->n_un.n_strx], section->base_address + (sizeof(uint32_t) * j));
          }
       }
    }
    free_segment_list(segment_list);
-   free_section_list(section_list);
+   free_section_list(section_list);  
+}
+
+
+void load_executable(char* filename)
+{
+   unsigned char* data;
+   FILE* file = NULL;
+   size_t file_length;
+   struct mach_header* header;
+   uint32_t base = 0;
+
+   if (try_cache(filename))
+     return; // try_cache will load it for us
+   
+   file = fopen(filename, "rb");
+   assert(file);
+   fseek(file, 0, SEEK_END);
+   file_length = ftell(file);
+   fseek(file, 0, SEEK_SET);
+   data = malloc(file_length);
+   fread(data, file_length, 1, file);
+   fclose(file);
+
+   header = (struct mach_header*)data;
+   if (header->magic == FAT_CIGAM)
+   {
+      // Universal binary. Lets find the armv7 one
+      struct fat_header* fat = (struct fat_header*)data;
+      printf("Universal binary supporting %d different CPU architectures\n", byteswap32(fat->nfat_arch));
+      uint32_t count = byteswap32(fat->nfat_arch);
+      uint8_t arch_found = 0;
+      for (int i = 0; i < count && !arch_found; i++)
+      {
+         struct fat_arch* arch = (struct fat_arch*)(data + sizeof(struct fat_header) + (i*(sizeof(struct fat_arch))));
+         if (arch->cputype == byteswap32(CPU_TYPE_ARM))
+         {
+            header = (struct mach_header*)&data[byteswap32(arch->offset)];
+            base = byteswap32(arch->offset);
+            arch_found = 1;
+            break;
+         }
+      }
+      assert(arch_found);
+   }
+   parse_executable(&data[base], filename);
    free(data);
 }
+
 
 
 breakpoint_t* find_breakpoint(uint32_t pc)
@@ -582,4 +601,9 @@ void free_breakpoint(void* ptr)
 void prepare_loader()
 {
    breakpoints = alloc_map(free_breakpoint, hash_uint32, comparator_uint32);
+   unsigned char* hypervisor_break = malloc(4);
+   printf("Mapping memory to 0xfffffff0\n");
+   map_memory(hypervisor_break, 0xfffffff0, 4);
+   write_mem(4, 0xfffffff0, BREAK32);
+   load_dyld_cache("dyld_shared_cache_armv7");
 }

@@ -94,7 +94,7 @@ unsigned char* map_addr(uint32_t addr)
 {
    for (page_table_t* t = page_tables; t; t = t->next)
    {
-      if (addr >= t->address && addr < (t->address + t->length))
+      if (addr >= t->address && addr <= (t->address + t->length))
          return &t->data[addr - t->address];
    }
    printf("Attempted to read from unmapped address %08x\n", addr);
@@ -439,7 +439,6 @@ void initialize_state()
    // Copy in argc and argv...?
    write_mem(4, state.SP, 0);
    state.SP -= 4;
-   
    state.t = 0;
 }
 
@@ -751,6 +750,7 @@ int decode_instruction(instruction_t* instruction)
          {
             // B, BL, block data transfer
             op = (word >> 20) & 0x3f;
+            uint8_t Rn = (word >> 16) & 15;
             if ((op & 0b110000) == 0b100000)
             {
                instruction->opcode = B;
@@ -764,12 +764,26 @@ int decode_instruction(instruction_t* instruction)
                instruction->B.imm32 = SignExtend(24, (word & 0xffffff) << 2, 32);
                DECODED;
             }
-            assert(0);
+            if (op == 0b010010)
+            {
+               if (Rn != 0b1101)
+               {
+                  NOT_DECODED("STMDB");
+               }
+               else
+               {  // A1
+                  instruction->opcode = PUSH;
+                  instruction->PUSH.registers = word & 0xffff;
+                  instruction->PUSH.unaligned_allowed = 0;
+                  DECODED;                  
+               }
+            }
+            assert(0 && "Decoding not finished");
          }
          else if ((op1 & 0b110) == (0b110))
          {
             // Coprocessor
-            assert(0);
+            assert(0 && "Coprocessor not implemented");
          }         
       }
       else
@@ -1919,6 +1933,7 @@ void print_opcode(instruction_t* instruction)
 }
 void step_machine(int steps)
 {
+   printf("hello: %08x\n", state.next_instruction);
    for (int step = 0; step < steps; step++)
    {
       instruction_t instruction;
@@ -2031,8 +2046,6 @@ void step_machine(int steps)
          {
             uint32_t offset;
             uint32_t data;
-            uint8_t carry_out;
-            uint8_t overflow_out;
             if (instruction.STR_R.shift_t == LSL && instruction.STR_R.shift_n == 0) printf(" %s, %s, %s\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m]);
             else printf(" %s, [%s, %s %s %d]\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m], shift_name[instruction.STR_R.shift_t], instruction.STR_R.shift_n);
             CHECK_CONDITION;
@@ -2398,6 +2411,32 @@ void step_machine(int steps)
    }
 }
 
+
+
+
+void save_state(state_t* dest)
+{
+   memcpy(dest, &state, sizeof(state_t));
+}
+
+void restore_state(state_t* src)
+{
+   memcpy(&state, src, sizeof(state_t));
+}
+
+uint32_t execute_function(uint32_t address)
+{   
+   state_t state_copy;
+   save_state(&state_copy);
+   state.next_instruction = address;
+   // FIXME: CRITICAL: stack may not be available at this point as load_executable may have scribbled all over the state!
+   state.LR = 0xfffffff0; // Hypervisor break
+   step_machine(30); // FIXME: Not 30, until we return!
+   uint32_t retval = state.r[0];
+   restore_state(&state_copy);
+   return retval;
+}
+
 int main(int argc, char** argv)
 {
    if (argc != 2)
@@ -2407,15 +2446,14 @@ int main(int argc, char** argv)
    }
    prepare_loader();
    register_stubs();
+   initialize_state();
    load_executable(argv[1]);
    dump_symtab();
    configure_hardware();   
    state.next_instruction = state.PC;
    state.PC = 0;
-   initialize_state();
    printf("Memory mapped. Starting execution at %08x\n", state.next_instruction);
    step_machine(150);
    printf("Finished stepping\n");
    return 0;
 }
-
