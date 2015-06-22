@@ -310,6 +310,58 @@ void free_section_list(section_list_t* section_list)
    }
 }
 
+void parse_export_tree(unsigned char* trie_root, unsigned char* trie, unsigned char* trie_end, unsigned char* buffer, unsigned char* root_buffer, uint64_t base_address)
+{
+   assert(trie < trie_end);
+   uint8_t terminal_size = *trie;
+   if (terminal_size > 127)
+      assert(0);
+   if (terminal_size != 0)
+   {
+      // This is a terminal
+      uint64_t flags = read_uleb_integer(&trie);
+      printf("Terminal: >%s< flags %016llx\n", root_buffer, flags);
+      if ((flags & EXPORT_SYMBOL_FLAGS_REEXPORT) == EXPORT_SYMBOL_FLAGS_REEXPORT)
+      {
+         // FIXME: Not implemented
+         return;
+      }
+      uint64_t address = read_uleb_integer(&trie);
+      if ((flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) == EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER)
+      {
+         // Finally, we know that this symbol needs to have its resolver run
+         uint64_t resolver = read_uleb_integer(&trie);
+         printf("      Symbol requires a resolver to be run at %016llx, or call the stub at %016llx\n", resolver + base_address, address + base_address);
+         // Run resolver here and advise that we have found a symbol by calling found_symbol.
+         uint32_t resolved = execute_function(resolver+base_address);
+         found_symbol((char*)root_buffer, resolved);
+      }
+      else
+      {
+         // advise that we have found a symbol by calling found_symbol.
+         found_symbol((char*)root_buffer, address+base_address);
+      }
+   }
+   else
+   {
+      trie++;
+      uint8_t child_count = *trie++;
+      unsigned char* tmp = buffer;
+      for (int i = 0; i < child_count; i++)
+      {
+         buffer = tmp;
+         while(*trie)
+         {
+            *buffer++ = *trie++;
+         }
+         *buffer = *trie;
+         uint64_t offset = read_uleb_integer(&trie);
+         trie++;
+         assert(offset != 0);
+         parse_export_tree(trie_root, trie_root + offset, trie_end, buffer, root_buffer, base_address);
+      }      
+   }
+}
 
 void parse_executable(unsigned char* data, uint32_t offset, char* filename)
 {
@@ -323,6 +375,7 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
    struct load_command* command;
    struct mach_header* header;
    header = (struct mach_header*)data;
+   uint64_t text_segment = 0;
       
    assert(header->magic == MH_MAGIC);
    command = (struct load_command*)(data + sizeof(struct mach_header));
@@ -338,6 +391,8 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
          {            
             struct segment_command* c = (struct segment_command*)command;
             printf("Got segment: %s (with %d sections) mapped to %08x (file offset is %08x)\n", c->segname, c->nsects, c->vmaddr, c->fileoff);
+            if (strcmp(c->segname, "__TEXT") == 0)
+               text_segment = c->vmaddr;
             for (int j = 0; j < c->nsects; j++)
             {
                unsigned char* chunk = NULL;
@@ -345,7 +400,7 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
                printf("   Got section #%d (%s) in segment %s (mapped to %08x), file location %08x\n", section_number, s->sectname, c->segname, s->addr, s->offset);
                if ((strcmp(c->segname, "__TEXT") == 0) && (strcmp(s->sectname, "__text") == 0))
                {
-                  initial_pc = s->addr;
+                  initial_pc = s->addr;                  
                }
                chunk = calloc(s->size, 1);
                if (!((s->flags & S_ZEROFILL) == S_ZEROFILL))
@@ -387,6 +442,7 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
             printf("Got symtab containing %d symbols\n", c->nsyms);
             symbol_table = (struct nlist*)(&data[c->symoff - offset]);
             string_table = (char*)&data[c->stroff - offset];
+            /*
             for (int j = 0; j < c->nsyms; j++)
             {
                struct nlist* index_ptr = &symbol_table[j];
@@ -398,13 +454,14 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
                }
                else
                {
-               printf("%s provides symbol %s at address %08x with type %02x and attributes %04x section is #%d\n", filename, &data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value, index_ptr->n_type, index_ptr->n_desc, index_ptr->n_sect);
+                  printf("%s provides symbol %s at address %08x with type %02x and attributes %04x section is #%d\n", filename, &data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value, index_ptr->n_type, index_ptr->n_desc, index_ptr->n_sect);
                   if (index_ptr->n_desc & N_ARM_THUMB_DEF)
                      found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx - offset], (index_ptr->n_value | 1));
                   else
                      found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value);
                }
             }
+            */
             break;
          }
          case LC_DYSYMTAB:
@@ -418,12 +475,15 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
          case LC_DYLD_INFO_ONLY:
          {
             struct dyld_info_command* c = (struct dyld_info_command*)command;
+            unsigned char tmp_buffer[4096];
+            printf("Exports from %s start at 0x%x and are %d long\n", filename, c->export_off, c->export_size);
+            tmp_buffer[0] = 0;
+            parse_export_tree(&data[c->export_off - offset], &data[c->export_off - offset], &data[c->export_off + c->export_size - offset], (unsigned char*)&tmp_buffer, (unsigned char*)&tmp_buffer, text_segment);
             printf("Binding symbols from %s (%d bytes of binding opcodes)\n", filename, c->bind_size);
             bind_symbols(filename, segment_list, "external", &data[c->bind_off - offset], &data[c->bind_off + c->bind_size - offset]);
             printf("Binding lazy symbols from  %s (%d bytes of binding opcodes)\n", filename, c->lazy_bind_size);
-            bind_symbols(filename, segment_list, "lazy", &data[c->lazy_bind_off - offset], &data[c->lazy_bind_off + c->lazy_bind_size - offset]);
-            printf("Exports from %s start at 0x%x and are %d long\n", filename, c->export_off, c->export_size);
-            //exports_trie = c->export_off;
+            bind_symbols(filename, segment_list, "lazy", &data[c->lazy_bind_off - offset], &data[c->lazy_bind_off + c->lazy_bind_size - offset]);            
+            
             break;
          }
          case LC_ID_DYLIB:
