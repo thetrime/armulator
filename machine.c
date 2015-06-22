@@ -40,10 +40,12 @@ typedef enum
    IT,
    BX,
    AND_I,
-   STR_R
+   STR_R,
+   LDREX,
+   STREX
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex"};
 
 typedef enum
 {
@@ -272,6 +274,17 @@ typedef struct
       {
          uint8_t m;
       } BX;
+      struct
+      {
+         uint8_t t, n;
+         uint32_t imm32;
+      } LDREX;
+      struct
+      {
+         uint8_t t, n, d;
+         uint32_t imm32;
+      } STREX;
+
    };
 } instruction_t;
 
@@ -444,7 +457,7 @@ void initialize_state()
 
 int decode_instruction(instruction_t* instruction)
 {
-   printf("instruction at = %08x, SP = %08x)\n", state.next_instruction, state.SP);
+   //printf("instruction at = %08x, SP = %08x, r2 = %08x)\n", state.next_instruction, state.SP, state.r[2]);
    instruction->source_address = state.next_instruction;
    if (state.t == 0) // ARM mode
    {
@@ -549,7 +562,11 @@ int decode_instruction(instruction_t* instruction)
                   else if (op2 == 1)
                   {
                      if (op == 1)
-                        NOT_DECODED("BX");
+                     {
+                        instruction->opcode = BX;
+                        instruction->BX.m = word & 15;
+                        DECODED;
+                     }
                      else if (op == 3)
                         NOT_DECODED("CLZ");                     
                   }
@@ -590,6 +607,59 @@ int decode_instruction(instruction_t* instruction)
                }
                else if (((op1 & 0b10000) == 0b10000) && (op2 == 0b1001))
                {
+                  op = (word >> 20) & 15;
+                  if ((op & 0b1011) == 0)
+                  {
+                     NOT_DECODED("SWP/SWPB");
+                  }
+                  else if (op == 0b1000)
+                  {  // A1
+                     instruction->opcode = STREX;
+                     instruction->STREX.d = (word >> 12) & 15;
+                     instruction->STREX.t = word & 15;
+                     instruction->STREX.n = (word >> 16) & 15;
+                     instruction->STREX.imm32 = 0;
+                     if (instruction->STREX.t == 15 || instruction->STREX.n == 15 || instruction->STREX.d == 15)
+                        UNPREDICTABLE;
+                     if (instruction->STREX.d == instruction->STREX.n == 15 || instruction->STREX.d == instruction->STREX.t)
+                        UNPREDICTABLE;
+                     DECODED;
+                  }
+                  else if (op == 0b1001)
+                  {  // A1
+                     instruction->opcode = LDREX;
+                     instruction->LDREX.t = (word >> 12) & 15;
+                     instruction->LDREX.n = (word >> 16) & 15;
+                     instruction->LDREX.imm32 = 0;
+                     if (instruction->LDREX.t == 15 || instruction->LDREX.n == 15)
+                        UNPREDICTABLE;
+                     DECODED;
+                  }
+                  else if (op == 0b1010)
+                  {
+                     NOT_DECODED("STREXD");
+                  }
+                  else if (op == 0b1011)
+                  {
+                     NOT_DECODED("LDREXD");
+                  }
+                  else if (op == 0b1100)
+                  {
+                     NOT_DECODED("STREXB");
+                  }
+                  else if (op == 0b1101)
+                  {
+                     NOT_DECODED("LDREXB");
+                  }
+                  else if (op == 0b1110)
+                  {
+                     NOT_DECODED("STREXH");
+                  }
+                  else if (op == 0b1111)
+                  {
+                     NOT_DECODED("LDREXH");
+                  }
+
                   // Synchronization
                   assert(0);
                }
@@ -611,7 +681,22 @@ int decode_instruction(instruction_t* instruction)
                   // Data processing (immediate)
                   op = (word >> 20) & 31;
                   uint8_t rn = (word >> 16) & 15;
-                  if ((op & 0b11110) == 0b01000)
+                  if ((op & 0b11110) == 0b00000)
+                  {
+                     NOT_DECODED("AND_I");
+                  }
+                  else if ((op & 0b11110) == 0b000010)
+                  {
+                     NOT_DECODED("EOR_I");
+                  }
+                  else if ((op & 0b11110) == 0b00100)
+                  {
+                     if (rn != 15)
+                        NOT_DECODED("SUB_I");
+                     else
+                        NOT_DECODED("ADR");
+                  }
+                  else if ((op & 0b11110) == 0b01000)
                   {
                      if (rn != 15)
                      {
@@ -627,6 +712,49 @@ int decode_instruction(instruction_t* instruction)
                         NOT_DECODED("ADR");
                      }
                   }
+                  else if ((op & 0b11110) == 0b01010)
+                  {
+                     NOT_DECODED("ADC_I");
+                  }
+                  else if ((op & 0b11110) == 0b01100)
+                  {
+                     NOT_DECODED("SBC_I");
+                  }
+                  else if ((op & 0b11110) == 0b01110)
+                  {
+                     NOT_DECODED("RSC_I");
+                  }
+                  else if (op == 0b10001)
+                  {
+                     NOT_DECODED("TST_I");
+                  }
+                  else if (op == 0b10011)
+                  {
+                     NOT_DECODED("TEQ_I");
+                  }
+                  else if (op == 0b10101)
+                  {
+                     instruction->opcode = CMP_I;
+                     instruction->CMP_I.n = (word >> 16) & 15;
+                     instruction->CMP_I.imm32 = ARMExpandImm(word & 0xfff);
+                     DECODED;
+                  }
+                  else if (op == 0b10111)
+                  {
+                     NOT_DECODED("CMN_I");
+                  }
+                  else if ((op & 0b11110) == 0b11000)
+                  {
+                     NOT_DECODED("ORR_I");
+                  }
+                  else if ((op & 0b11110) == 0b11010)
+                  {  // A1
+                     instruction->opcode = MOV_I;
+                     instruction->MOV_I.d = (word >> 12) & 15;
+                     instruction->setflags = ((word >> 20) & 1) == 1;
+                     instruction->MOV_I.imm32 = ARMExpandImm_C(word & 0xfff, state.c, &instruction->MOV_I.c);
+                     DECODED;
+                  }
                   else if ((op & 0b11110) == 0b11100)
                   {
                      instruction->opcode = BIC_I;
@@ -636,15 +764,11 @@ int decode_instruction(instruction_t* instruction)
                      instruction->BIC_I.imm32 = ARMExpandImm_C(word & 0xfff, state.c, &instruction->BIC_I.c);
                      DECODED;
                   }
-                  else if (op == 0b10101)
+                  else if ((op & 0b11110) == 0b11110)
                   {
-                     instruction->opcode = CMP_I;
-                     instruction->CMP_I.n = (word >> 16) & 15;
-                     instruction->CMP_I.imm32 = ARMExpandImm(word & 0xfff);
-                     DECODED;
-                  }
-                  
-                  assert(0);
+                     NOT_DECODED("MVN_I");
+                  }                                    
+                  ILLEGAL_OPCODE;
                }
                else if (op1 == 0b10000)
                {
@@ -952,8 +1076,7 @@ int decode_instruction(instruction_t* instruction)
                {  // T1
                   instruction->opcode = TST_I;
                   instruction->TST_I.n = word & 15;
-                  // FIXME: This is probably not right!
-                  instruction->TST_I.imm32 = ThumbExpandImm_C((word2 & 255) | ((word2 >> 4) & 0x700) | ((word << 1) & 0x800), state.c, &instruction->TST_I.c);
+                  instruction->TST_I.imm32 = ThumbExpandImm_C(((word << 16) | word2), state.c, &instruction->TST_I.c);
                   assert(instruction->TST_I.n != 13 && instruction->TST_I.n != 15);
                   DECODED;
                }
@@ -1552,7 +1675,7 @@ int decode_instruction(instruction_t* instruction)
          }
          else if (((opcode & 0b111100) == 0b010100) || ((opcode & 0b111000) == 0b011000) || ((opcode & 0b111000) == 0b100000))
          {
-            // load/store single item
+            // load/store single data item
             uint8_t opA = (word >> 12) & 15;
             uint8_t opB = (word >> 9) & 7;
             if (opA == 0b0101)
@@ -1637,14 +1760,14 @@ int decode_instruction(instruction_t* instruction)
                   DECODED;
                }
                else
-               {
+               {  // T1
                   instruction->opcode = LDRB_I;
                   instruction->LDRB_I.t = word & 7;
                   instruction->LDRB_I.n = (word >> 3) & 7;
                   instruction->LDRB_I.imm32 = (word >> 6) & 31;
                   instruction->LDRB_I.index = 1;
                   instruction->LDRB_I.add = 1;
-                  instruction->LDRB_I.wback = 1;
+                  instruction->LDRB_I.wback = 0;
                   DECODED;
                }                  
             }           
@@ -1933,7 +2056,6 @@ void print_opcode(instruction_t* instruction)
 }
 void step_machine(int steps)
 {
-   printf("hello: %08x\n", state.next_instruction);
    for (int step = 0; step < steps; step++)
    {
       instruction_t instruction;
@@ -2050,7 +2172,7 @@ void step_machine(int steps)
             else printf(" %s, [%s, %s %s %d]\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m], shift_name[instruction.STR_R.shift_t], instruction.STR_R.shift_n);
             CHECK_CONDITION;
             Shift(32, state.r[instruction.STR_R.m], instruction.STR_R.shift_t, instruction.STR_R.shift_n, state.c, &offset);
-            uint32_t offset_address = state.r[instruction.STR_R.n] + (instruction.LDRB_I.add?offset:(-offset));
+            uint32_t offset_address = state.r[instruction.STR_R.n] + (instruction.STR_R.add?offset:(-offset));
             uint32_t address = instruction.STR_R.index?offset_address:state.r[instruction.STR_R.n];
             data = state.r[instruction.STR_R.t];
             if (state.t == 0 || (address & 3) == 0)
@@ -2215,13 +2337,16 @@ void step_machine(int steps)
                state.t = 1;
                state.next_instruction = address & ~1;
             }
-            else if ((address & 2) == 2)
+            else if ((address & 2) == 0)
             {
                state.t = 0;
                state.next_instruction = address;
             }
             else
+            {
+               printf("Address: %08x\n", address&2);
                UNPREDICTABLE;
+            }
             break;
          }
          case PUSH:
@@ -2376,6 +2501,11 @@ void step_machine(int steps)
          case BKPT:
          {
             printf("\n");
+            if (instruction.source_address == 0xfffffff0)
+            {
+               // Hypervisor return
+               return;
+            }
             breakpoint_t* breakpoint = find_breakpoint(instruction.source_address);
             if (breakpoint->handler != NULL)
             {
@@ -2405,6 +2535,40 @@ void step_machine(int steps)
             state.itstate = (instruction.IT.firstcond << 4) | (instruction.IT.mask);
             break;
          }
+         case LDREX:
+         {
+            if (instruction.LDREX.imm32 == 0) printf(" %s, [%s]\n", reg_name[instruction.LDREX.t], reg_name[instruction.LDREX.n]);
+            else printf(" %s, [%s, #0x%08x]\n", reg_name[instruction.LDREX.t], reg_name[instruction.LDREX.n], instruction.LDREX.imm32);
+            CHECK_CONDITION;
+
+            uint32_t address = state.r[instruction.LDREX.n] + instruction.LDREX.imm32;
+            // FIXME: This is not implemented yet. Currently we do not implement any interrupts or multiprocessor hardware so it is not
+            //        necessary, but will be VITAL when we do!
+            //SetExclusiveMonitors(address, 4);  
+            state.r[instruction.LDREX.t] = read_mem(4, address);
+            break;
+         }
+         case STREX:
+         {
+            if (instruction.STREX.imm32 == 0) printf(" %s, %s, [%s]\n", reg_name[instruction.STREX.d], reg_name[instruction.STREX.t], reg_name[instruction.LDREX.n]);
+            else printf(" %s, %s, [%s, #0x%08x]\n", reg_name[instruction.STREX.d], reg_name[instruction.STREX.t], reg_name[instruction.STREX.n], instruction.STREX.imm32);
+            CHECK_CONDITION;
+
+            uint32_t address = state.r[instruction.STREX.n] + instruction.STREX.imm32;
+            // FIXME: This is not implemented yet. Currently we do not implement any interrupts or multiprocessor hardware so it is not
+            //        necessary, but will be VITAL when we do!
+            //if (ExclusiveMonitorsPass(address, 4))
+            //{
+            write_mem(4, address, state.r[instruction.STREX.t]);
+            state.r[instruction.STREX.d] = 0;
+            //}
+            //else
+            //{
+            //   state.r[instruction.STREX.d] = 1;
+            //}
+            break;
+         }
+
          default:
             assert(0 && "Opcode not implemented");
       }
@@ -2428,7 +2592,7 @@ uint32_t execute_function(uint32_t address)
 {   
    state_t state_copy;
    save_state(&state_copy);
-   state.next_instruction = address;
+   LOAD_PC(address);
    // FIXME: CRITICAL: stack may not be available at this point as load_executable may have scribbled all over the state!
    state.LR = 0xfffffff0; // Hypervisor break
    step_machine(30); // FIXME: Not 30, until we return!
@@ -2444,12 +2608,12 @@ int main(int argc, char** argv)
       printf("Usage: %s <executable>\n", argv[0]);
       return -1;
    }
+   configure_hardware();   
    prepare_loader();
    register_stubs();
    load_executable(argv[1]);
    initialize_state();
    dump_symtab();
-   configure_hardware();   
    state.next_instruction = state.PC;
    state.PC = 0;
    printf("Memory mapped. Starting execution at %08x\n", state.next_instruction);
