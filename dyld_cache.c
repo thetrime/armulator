@@ -27,6 +27,9 @@ void load_dyld_cache(char* filename)
    assert(strcmp(header->magic, "dyld_v1   armv7") == 0);
    struct dyld_cache_image_info* images = (struct dyld_cache_image_info*)&cache_data[header->imagesOffset];
    struct dyld_cache_mapping_info* map_info = (struct dyld_cache_mapping_info*)&cache_data[header->mappingOffset];
+   printf("Cache is located at %p and is 0x%08zx bytes long\n", cache_data, file_length);
+   for (int i = 0; i < header->mappingCount; i++)
+      printf("Mapping: %016llx-%016llx -> %016llx\n", (&map_info[i])->address, (&map_info[i])->address+(&map_info[i])->size, (&map_info[i])->fileOffset);
    for (int i = 0; i < header->imagesCount; i++)
    {
       struct dyld_cache_image_info* image = &images[i];
@@ -38,6 +41,7 @@ void load_dyld_cache(char* filename)
          {
             file_offset = malloc(sizeof(uint64_t));
             *file_offset = mapping->fileOffset + (image->address - mapping->address);
+            //*file_offset = mapping->address;
             break;
          }
       }
@@ -54,9 +58,16 @@ int try_cache(char* filename)
    uint64_t* address;
    if (map_get(cache_map, filename, (void**)&address))
    {
-      printf("--- Cache hit!\n");
-      parse_executable(&cache_data[*address], filename);
+      printf("--- Cache hit for %s! (%08x)\n", filename, *address);
+      parse_executable(&cache_data[*address], *address, filename);
       return 1;      
    }
+   printf(" --- Cache miss for %s\n", filename);
    return 0;
 }
+
+
+// Problem: All the values in the structures are relative to the start of the file, not the value of data.
+// Need to call parse_executable with 2 values: The base offset (from the start of the FAT archive or the file if no FAT)
+//                                            : The data pointer to the file
+//

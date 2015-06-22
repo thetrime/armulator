@@ -444,7 +444,7 @@ void initialize_state()
 
 int decode_instruction(instruction_t* instruction)
 {
-   //printf("instruction at = %08x, SP = %08x)\n", state.next_instruction, state.SP);
+   printf("instruction at = %08x, SP = %08x)\n", state.next_instruction, state.SP);
    instruction->source_address = state.next_instruction;
    if (state.t == 0) // ARM mode
    {
@@ -2446,8 +2446,8 @@ int main(int argc, char** argv)
    }
    prepare_loader();
    register_stubs();
-   initialize_state();
    load_executable(argv[1]);
+   initialize_state();
    dump_symtab();
    configure_hardware();   
    state.next_instruction = state.PC;

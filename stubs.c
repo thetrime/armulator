@@ -1,61 +1,61 @@
 #include "stub_glue.h"
 
-__stub _pthread_mutex_lock()
+__stub x_pthread_mutex_lock()
 {
    // FIXME: Implement once I have threads!
    //uint32_t a0 = PTR_ARG(0);
    return 0;
 }
 
-__stub _pthread_mutex_unlock()
+__stub x_pthread_mutex_unlock()
 {
    // FIXME: Implement once I have threads!
    return 0;
 }
  
-__stub _pthread_once()
+__stub x_pthread_once()
 {
    return 0;
 }
 
-__stub _pthread_self()
+__stub x_pthread_self()
 {
    return 0;
 }
 
-__stub _pthread_setname_np()
+__stub x_pthread_setname_np()
 {
    return 0;
 }
 
-__stub _pthread_setschedparam()
+__stub x_pthread_setschedparam()
 {
    return 0;
 }
 
-__stub _rand()
+__stub x_rand()
 {
    return 0; // hehe
 }
 
 
-__stub _CFRetain()
+__stub x_CFRetain()
 {
    return 0;
 }
 
-__stub _CFRelease()
+__stub x_CFRelease()
 {
    return 0;
 }
 
-__stub _MGCopyAnswer()
+__stub x_MGCopyAnswer()
 {
    return 0;
 }
 
 
-__stub _OSSpinLockLock()
+__stub x_OSSpinLockLock()
 {
    /*
    if ((*0xffff1020 & 0x9000) == 0x1000)

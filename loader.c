@@ -178,6 +178,12 @@ void bind_symbols(char* current_file, segment_list_t* segment_list, char* mode, 
          case BIND_SET_DYLIB_ORDINAL_ULEB:
             sym.library_ordinal = read_uleb_integer(&op);
             break;
+         case BIND_SET_DYLIB_SPECIAL_IMM:
+            if ((*op & 15) == 0)
+               sym.library_ordinal = 0;
+            else
+               sym.library_ordinal = 0xf0 | (*op & 15);
+            break;
          case BIND_SET_SYMBOL_TRAILING_FLAGS_IMM:
          {
             // flags are in the low nibble
@@ -256,6 +262,32 @@ struct loaded_dylib_t
 typedef struct loaded_dylib_t loaded_dylib_t;
 loaded_dylib_t* loaded_dylibs = NULL;
 
+int load_dylib(char* base, char* filename)
+{
+   // First mark it as loaded to avoid cycles
+   loaded_dylib_t* x = malloc(sizeof(loaded_dylib_t));
+   x->dylib_name = strdup(filename);
+   x->next = loaded_dylibs;
+   loaded_dylibs = x;
+   
+   if (try_cache(filename))
+      return 1;
+   
+   char* dylib_name = find_dylib(base, filename);
+   if (dylib_name != NULL)
+   {
+      printf("Found at %s\n", dylib_name);
+      load_executable(dylib_name);
+      free(dylib_name);
+   }
+   else
+   {
+      printf("Failed to find dylib\n");
+      return 0;
+   }
+}
+
+
 #define byteswap32(x) ((((x) & 0xff000000) >> 24) | (((x) & 0x00ff0000) >>  8) | (((x) & 0x0000ff00) <<  8) | (((x) & 0x000000ff) << 24))
 
 void free_segment_list(segment_list_t* segment_list)
@@ -279,7 +311,7 @@ void free_section_list(section_list_t* section_list)
 }
 
 
-void parse_executable(unsigned char* data, char* filename)
+void parse_executable(unsigned char* data, uint32_t offset, char* filename)
 {
    struct nlist* symbol_table = NULL;
    char* string_table = NULL;
@@ -305,19 +337,30 @@ void parse_executable(unsigned char* data, char* filename)
          case LC_SEGMENT:
          {            
             struct segment_command* c = (struct segment_command*)command;
-            //printf("Got segment: %s (with %d sections) mapped to %08x\n", c->segname, c->nsects, c->vmaddr);
+            printf("Got segment: %s (with %d sections) mapped to %08x (file offset is %08x)\n", c->segname, c->nsects, c->vmaddr, c->fileoff);
             for (int j = 0; j < c->nsects; j++)
             {
                unsigned char* chunk = NULL;
                struct section* s = (struct section*)(((char*)command) + sizeof(struct segment_command) + j*sizeof(struct section));
-               printf("   Got section #%d (%s) in segment %s (mapped to %08x)\n", section_number, s->sectname, c->segname, s->addr);
+               printf("   Got section #%d (%s) in segment %s (mapped to %08x), file location %08x\n", section_number, s->sectname, c->segname, s->addr, s->offset);
                if ((strcmp(c->segname, "__TEXT") == 0) && (strcmp(s->sectname, "__text") == 0))
                {
                   initial_pc = s->addr;
                }
                chunk = calloc(s->size, 1);
                if (!((s->flags & S_ZEROFILL) == S_ZEROFILL))
-                 memcpy(chunk, &data[s->offset], s->size);
+               {
+                  uint64_t file_base = 0;
+                  // I do not understand this; some of the sections have fileoff relative to the start of the image, but some are absolute from the start of the file
+                  // there seems to be no flags indicating which is which
+                  if (c->fileoff < offset)
+                     file_base = s->offset;
+                  else
+                     file_base = s->offset - offset;
+                  // Print the message with the position relative to the start of the file, for the sake of sanity
+                  printf("Mapping data from absolute file location %016llx to memory address %08x\n", file_base + offset, s->addr);
+                  memcpy(chunk, &data[file_base], s->size);
+               }
                map_memory(chunk, s->addr, s->size);
                section_list_t* section = malloc(sizeof(section_list_t));
                section->next = section_list;
@@ -342,24 +385,24 @@ void parse_executable(unsigned char* data, char* filename)
          {
             struct symtab_command* c = (struct symtab_command*)command;
             printf("Got symtab containing %d symbols\n", c->nsyms);
-            symbol_table = (struct nlist*)(&data[c->symoff]);
-            string_table = (char*)&data[c->stroff];
+            symbol_table = (struct nlist*)(&data[c->symoff - offset]);
+            string_table = (char*)&data[c->stroff - offset];
             for (int j = 0; j < c->nsyms; j++)
             {
                struct nlist* index_ptr = &symbol_table[j];
                if ((index_ptr->n_type & N_TYPE) == N_UNDF)
                {
                   // Undefined symbol
-                  // printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[c->stroff + index_ptr->n_un.n_strx]);
-                  // printf("   **** Need to find symbol #%d (%s) to fill in stub at %08x in %s\n", j, &data[c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value, filename);
+                  // printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[c->stroff + index_ptr->n_un.n_strx - offset]);
+                  // printf("   **** Need to find symbol #%d (%s) to fill in stub at %08x in %s\n", j, &data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value, filename);
                }
                else
                {
-               printf("%s provides symbol %s at address %08x with type %02x and attributes %04x section is #%d\n", filename, &data[c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value, index_ptr->n_type, index_ptr->n_desc, index_ptr->n_sect);
+               printf("%s provides symbol %s at address %08x with type %02x and attributes %04x section is #%d\n", filename, &data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value, index_ptr->n_type, index_ptr->n_desc, index_ptr->n_sect);
                   if (index_ptr->n_desc & N_ARM_THUMB_DEF)
-                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx], (index_ptr->n_value | 1));
+                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx - offset], (index_ptr->n_value | 1));
                   else
-                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx], index_ptr->n_value);
+                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value);
                }
             }
             break;
@@ -368,7 +411,7 @@ void parse_executable(unsigned char* data, char* filename)
          {
             struct dysymtab_command* c = (struct dysymtab_command*)command;
             printf("Got dysymtab containing %d indirect symbols, %d undefined symbols, %d local symbols\n", c->nindirectsyms, c->nundefsym, c->nlocalsym);
-            indirect_table = (uint32_t*)&data[c->indirectsymoff];
+            indirect_table = (uint32_t*)&data[c->indirectsymoff - offset];
             indirect_count = c->nindirectsyms;
             break;
          }
@@ -376,10 +419,10 @@ void parse_executable(unsigned char* data, char* filename)
          {
             struct dyld_info_command* c = (struct dyld_info_command*)command;
             printf("Binding symbols from %s (%d bytes of binding opcodes)\n", filename, c->bind_size);
-            bind_symbols(filename, segment_list, "external", &data[c->bind_off], &data[c->bind_off + c->bind_size]);
+            bind_symbols(filename, segment_list, "external", &data[c->bind_off - offset], &data[c->bind_off + c->bind_size - offset]);
             printf("Binding lazy symbols from  %s (%d bytes of binding opcodes)\n", filename, c->lazy_bind_size);
-            bind_symbols(filename, segment_list, "lazy", &data[c->lazy_bind_off], &data[c->lazy_bind_off + c->lazy_bind_size]);
-            printf("Exports from %s start at 0x%x\n", filename, c->export_off);
+            bind_symbols(filename, segment_list, "lazy", &data[c->lazy_bind_off - offset], &data[c->lazy_bind_off + c->lazy_bind_size - offset]);
+            printf("Exports from %s start at 0x%x and are %d long\n", filename, c->export_off, c->export_size);
             //exports_trie = c->export_off;
             break;
          }
@@ -414,7 +457,7 @@ void parse_executable(unsigned char* data, char* filename)
             state.r[13] = base[15];
             state.r[14] = base[16];
             state.r[15] = base[17];
-            //state.cspr = base[2];
+            //state.cspr = base[??];
             break;
          }
          case LC_THREAD:
@@ -437,26 +480,7 @@ void parse_executable(unsigned char* data, char* filename)
             if (!dylib_already_loaded)
             {
                printf("Load dylib %s (compatibility version %d.%d.%d, current version %d.%d.%d)\n", ((unsigned char*)command) + c->dylib.name.offset, (c->dylib.compatibility_version >> 16) & 0xffff, (c->dylib.compatibility_version >> 8) & 0xff, (c->dylib.compatibility_version >> 0) & 0xff, (c->dylib.current_version >> 16) & 0xffff, (c->dylib.current_version >> 8) & 0xff, (c->dylib.current_version >> 0) & 0xff);
-               char* dylib_name = find_dylib(filename, ((char*)command) + c->dylib.name.offset);
-               if (dylib_name != NULL)
-               {
-                  printf("Found at %s\n", dylib_name);
-               }
-               else
-               {
-                  printf("Failed to find dylib\n");
-                  exit(-1);
-               }
-               // First mark it as loaded to avoid cycles
-               loaded_dylib_t* x = malloc(sizeof(loaded_dylib_t));
-               x->dylib_name = strdup(((char*)command) + c->dylib.name.offset);
-               x->next = loaded_dylibs;
-               loaded_dylibs = x;
-               
-               // Load here
-               load_executable(dylib_name);
-               free(dylib_name);
-
+               assert(load_dylib(filename, ((char*)command) + c->dylib.name.offset));
             }
             break;
          }
@@ -565,7 +589,7 @@ void load_executable(char* filename)
       }
       assert(arch_found);
    }
-   parse_executable(&data[base], filename);
+   parse_executable(&data[base], 0, filename);
    free(data);
 }
 
