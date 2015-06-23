@@ -42,10 +42,11 @@ typedef enum
    AND_I,
    STR_R,
    LDREX,
-   STREX
+   STREX,
+   LDM
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm"};
 
 typedef enum
 {
@@ -83,6 +84,9 @@ page_table_t* page_tables = NULL;
 #define UNPREDICTABLE assert(0 && "Unpredictable")
 #define UNDEFINED assert(0 && "Undefined")
 #define DECODED return 1
+
+// ARMv7 always supports unaligned memory access
+#define UnalignedSupport (1)
 
 #define CHECK_CONDITION  {if (!condition_passed(instruction.condition)) continue;}
 
@@ -284,6 +288,12 @@ typedef struct
          uint8_t t, n, d;
          uint32_t imm32;
       } STREX;
+      struct
+      {
+         uint8_t n;
+         uint16_t registers;
+         uint8_t wback;
+      } LDM;
 
    };
 } instruction_t;
@@ -1089,8 +1099,14 @@ int decode_instruction(instruction_t* instruction)
                   NOT_DECODED("ORR_I");
                }
                else if (op == 2 && Rn == 15)
-               {
-                  NOT_DECODED("MOV_I");
+               {  // T2
+                  instruction->opcode = MOV_I;
+                  instruction->MOV_I.d = (word2 >> 8) & 15;
+                  instruction->setflags = (word >> 4) & 1;
+                  instruction->MOV_I.imm32 = ThumbExpandImm_C(((word << 16) | word2), state.c, &instruction->MOV_I.c);
+                  if (instruction->MOV_I.d == 13 || instruction->MOV_I.d == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op == 3 && Rn != 15)
                {
@@ -1366,7 +1382,7 @@ int decode_instruction(instruction_t* instruction)
             if ((op2 & 0b1110001) == 0b0000000)
             {
                // Store single
-               uint8_t op1 = (word >> 5) & 3;
+               uint8_t op1 = (word >> 5) & 7;
                uint8_t op2 = (word2 >> 6) & 63;
                if ((op1 == 0 && (((op2 & 0b100100) == 0b100100) || ((op2 & 0b111100) == 0b110000))) || (op1 == 0b100))
                {
@@ -1409,7 +1425,18 @@ int decode_instruction(instruction_t* instruction)
                }
                else if (op1 == 0b110)
                {  // T3
-                  NOT_DECODED("STR_I"); 
+                  instruction->opcode = STR_I;
+                  instruction->STR_I.t = (word2 >> 12) & 15;
+                  instruction->STR_I.n = word & 15;
+                  instruction->STR_I.imm32 = word2 & 0xfff;
+                  instruction->STR_I.index = 1;
+                  instruction->STR_I.add = 1;
+                  instruction->STR_I.wback = 0;
+                  if (instruction->STR_I.t == 15)
+                     UNPREDICTABLE;
+                  if (instruction->STR_I.n == 15)
+                     UNDEFINED;
+                  DECODED;
                }
                else if (op1 == 0b010 && op2 == 0)
                {  // T2
@@ -1804,8 +1831,15 @@ int decode_instruction(instruction_t* instruction)
                   
                }
                else
-               {
-                  NOT_DECODED("LDR_I");
+               {  // T2
+                  instruction->opcode = LDR_I;
+                  instruction->LDR_I.t = (word >> 8) & 7;
+                  instruction->LDR_I.n = 13;
+                  instruction->LDR_I.imm32 = (word & 255) << 2;
+                  instruction->LDR_I.index = 1;
+                  instruction->LDR_I.add = 1;
+                  instruction->LDR_I.wback = 0;
+                  DECODED;
                }                  
             }           
             assert(0 && "Illegal opcode");
@@ -1985,9 +2019,16 @@ int decode_instruction(instruction_t* instruction)
             ILLEGAL_OPCODE;
          }
          else if ((opcode & 0b111110) == 0b110010)
-         {
+         { 
             // Load multiple registers
-            assert(0);
+            // T1
+            instruction->opcode = LDM;
+            instruction->LDM.n = (word >> 8) & 7;
+            instruction->LDM.registers = word & 255;
+            instruction->LDM.wback = ((instruction->LDM.registers >> instruction->LDM.n) & 1) == 0;
+            if (instruction->LDM.registers == 0)
+               UNPREDICTABLE;
+            DECODED;
          }
          else if ((opcode & 0b111100) == 0b110100)
          {
@@ -2168,7 +2209,7 @@ void step_machine(int steps)
          {
             uint32_t offset;
             uint32_t data;
-            if (instruction.STR_R.shift_t == LSL && instruction.STR_R.shift_n == 0) printf(" %s, %s, %s\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m]);
+            if (instruction.STR_R.shift_t == LSL && instruction.STR_R.shift_n == 0) printf(" %s, [%s, %s]\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m]);
             else printf(" %s, [%s, %s %s %d]\n", reg_name[instruction.STR_R.t], reg_name[instruction.STR_R.n], reg_name[instruction.STR_R.m], shift_name[instruction.STR_R.shift_t], instruction.STR_R.shift_n);
             CHECK_CONDITION;
             Shift(32, state.r[instruction.STR_R.m], instruction.STR_R.shift_t, instruction.STR_R.shift_n, state.c, &offset);
@@ -2178,7 +2219,10 @@ void step_machine(int steps)
             if (state.t == 0 || (address & 3) == 0)
                write_mem(4, address, data);
             else
-               assert(0 && "Garbage write");            
+            {
+               printf("Write to %08x\n", address);
+               assert(0 && "Garbage write");
+            }
             break;
          }
          case ADD_I:
@@ -2473,7 +2517,7 @@ void step_machine(int steps)
             printf(" %s, 0x%x\n", reg_name[instruction.CBNZ.n], instruction.CBNZ.imm32 + state.PC);
             if (state.r[instruction.CBNZ.n] != 0)
             {
-               LOAD_PC(state.PC + instruction.CBNZ.imm32);
+               LOAD_PC(state.PC + instruction.CBNZ.imm32 | state.t);
             }
             break;
          }
@@ -2568,7 +2612,32 @@ void step_machine(int steps)
             //}
             break;
          }
-
+         case LDM:
+         {
+            printf (" %s%s, { ", reg_name[instruction.LDM.n], (instruction.LDM.wback?"!":""));
+            uint8_t c = condition_passed(instruction.condition);
+            uint32_t address = state.r[instruction.LDM.n];
+            for (int i = 0; i < 14; i++)
+            {
+               if (instruction.LDM.registers & (1 << i))
+               {
+                  printf("%s ", reg_name[i]);
+                  if (c) state.r[i] = read_mem(4, address);
+                  address += 4;
+               }
+            }
+            if (instruction.LDM.registers & (1 << 15))
+            {
+               printf("%s ", reg_name[15]);
+               if (c) LOAD_PC(read_mem(4, address));
+            }
+            printf("}\n");
+            if (instruction.LDM.wback && (((instruction.LDM.registers >> instruction.LDM.n) & 1) == 0))
+               instruction.LDM.n += 4 * BitCount(instruction.LDM.registers);
+            if (instruction.LDM.wback && (((instruction.LDM.registers >> instruction.LDM.n) & 1) == 1))
+               UNKNOWN;            
+            break;
+         }
          default:
             assert(0 && "Opcode not implemented");
       }
@@ -2617,7 +2686,7 @@ int main(int argc, char** argv)
    state.next_instruction = state.PC;
    state.PC = 0;
    printf("Memory mapped. Starting execution at %08x\n", state.next_instruction);
-   step_machine(150);
+   step_machine(300);
    printf("Finished stepping\n");
    return 0;
 }
