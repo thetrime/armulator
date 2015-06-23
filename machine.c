@@ -48,10 +48,11 @@ typedef enum
    UXTH,
    SUB_I,
    ORR_R,
-   LDR_R
+   LDR_R,
+   UBFX
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx"};
 
 typedef enum
 {
@@ -80,6 +81,8 @@ page_table_t* page_tables = NULL;
 #define CURRENT_PC32 (state.PC-4)
 #define CURRENT_PC16 (state.PC-2)
 
+#define IN_IT_BLOCK ((state.itstate & 15) != 0)
+#define LAST_IN_IT_BLOCK ((state.itstate & 15) == 8)
 #define LOAD_PC(p) {state.next_instruction = (p) & ~1; state.t = ((p) & 1);}
 #define ALU_LOAD_PC(p) {if (state.t == 0) {LOAD_PC(p)} else {state.next_instruction = p;}}
 
@@ -326,7 +329,10 @@ typedef struct
       {
          uint8_t d, m, rotation;
       } UXTH;
-
+      struct
+      {
+         uint8_t d, n, lsbit, widthminus1;
+      } UBFX;
    };
 } instruction_t;
 
@@ -499,7 +505,7 @@ void initialize_state()
 
 int decode_instruction(instruction_t* instruction)
 {
-   //printf("instruction at = %08x, SP = %08x, r2 = %08x)\n", state.next_instruction, state.SP, state.r[2]);
+   printf("instruction at = %08x, SP = %08x, r2 = %08x)\n", state.next_instruction, state.SP, state.r[2]);
    instruction->source_address = state.next_instruction;
    if (state.t == 0) // ARM mode
    {
@@ -1107,7 +1113,7 @@ int decode_instruction(instruction_t* instruction)
             instruction->BL.imm32 = SignExtend(24, ((word & 0xffffff) << 2) | ((word >> 23) & 2), 32);
             DECODED;
          }
-         assert(0);
+         assert(0); // STC, STC2, LDC_I, LDC2_I, LDC_L, LDC2_L, MCRR, MCRR2, MRRC, MRRC2, CDP, CDP2, MCR, MCR2, MRC, MRC2
       }            
    }
    else if (state.t) // THUMB node
@@ -1420,10 +1426,17 @@ int decode_instruction(instruction_t* instruction)
                   NOT_DECODED("USAT16");
                }
                else if (op == 0b11100)
-               {
-                  NOT_DECODED("UBFX");
+               {  // T1
+                  instruction->opcode = UBFX;
+                  instruction->UBFX.d = (word2 >> 8) & 15;
+                  instruction->UBFX.n = word & 15;
+                  instruction->UBFX.lsbit = (((word2 >> 12) & 7) << 2) | ((word2 >> 6) & 3);
+                  instruction->UBFX.widthminus1 = word2 & 31;
+                  if (instruction->UBFX.d == 13 || instruction->UBFX.d == 15 || instruction->UBFX.n == 13 || instruction->UBFX.n == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
-               assert(0 && "Illegal opcode");
+               ILLEGAL_OPCODE;
             }
             else if (op == 1)
             {
@@ -1644,8 +1657,18 @@ int decode_instruction(instruction_t* instruction)
                uint8_t op2 = (word2 >> 6) & 63;
                uint8_t Rn = word & 15;
                if (op1 == 0 && op2 == 0 && Rn != 15)
-               {
-                  NOT_DECODED("LDR_R");
+               {  // T2
+                  instruction->opcode = LDR_R;
+                  instruction->LDR_R.t = (word2 >> 12) & 15;
+                  instruction->LDR_R.n = word & 15;
+                  instruction->LDR_R.m = word2 & 15;
+                  instruction->LDR_R.shift_t = LSL;
+                  instruction->LDR_R.shift_n = (word2 >> 4) & 3;
+                  if (instruction->LDR_R.m == 13 || instruction->LDR_R.m == 15)
+                     UNPREDICTABLE;
+                  if (instruction->LDR_R.t == 15 && IN_IT_BLOCK && !LAST_IN_IT_BLOCK)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if ((op1 == 0 && Rn != 15 && (((op2 & 0b100100) == 0b100100) || ((op2 & 0b111100) == 0b110000))) || (op1 == 1 && Rn != 15))
                {
@@ -1822,10 +1845,10 @@ int decode_instruction(instruction_t* instruction)
          }
          else if (opcode == 0b010001)
          {
+            // Special data instructions and branch-and-exchange
             opcode = (word >> 6) & 15;
             if (opcode == 0 || opcode == 1 || ((opcode & 0b1110) == 0b0010))
-            {
-               // T2
+            {  // T2 (this is both add low and add high)
                instruction->opcode = ADD_R;
                instruction->ADD_R.d = (word & 7) | ((word >> 4) & 8);
                instruction->ADD_R.n = instruction->ADD_R.d;
@@ -1833,36 +1856,48 @@ int decode_instruction(instruction_t* instruction)
                instruction->setflags = 0;
                instruction->ADD_R.shift_t = LSL;
                instruction->ADD_R.shift_n = 0;
-               assert(!(instruction->ADD_R.n == 15 && instruction->ADD_R.m == 15));
-               // FIXME: Check ITSTATE here if branch
+               if (instruction->ADD_R.n == 15 && instruction->ADD_R.m == 15)
+                  UNPREDICTABLE;
+               if (instruction->ADD_R.d == 15 && IN_IT_BLOCK && !LAST_IN_IT_BLOCK)
+                  UNPREDICTABLE;
                DECODED;
             }
             else if ((opcode & 0b1100) == 0b0100)
-            {
-               NOT_DECODED("CMP_R");
+            {  // T2
+               instruction->opcode = CMP_R;
+               instruction->CMP_R.n = (word & 7) | ((word >> 4) & 8);
+               instruction->CMP_R.m = (word >> 3) & 15;
+               instruction->CMP_R.shift_t = LSL;
+               instruction->CMP_R.shift_n = 0;
+               if (instruction->CMP_R.n < 8 && instruction->CMP_R.m < 8)
+                  UNPREDICTABLE;
+               if (instruction->CMP_R.n == 15 || instruction->CMP_R.m == 15)
+                  UNPREDICTABLE;
+               DECODED;
             }
             else if (opcode == 0b1000 || opcode == 0b1001 || ((opcode & 0b1110) == 0b1010))
-            {
+            {  // T1
                instruction->opcode = MOV_R;
                instruction->MOV_R.d = (word & 7) | ((word >> 4) & 8);
                instruction->MOV_R.m = (word >> 3) & 15;
                instruction->setflags = 0;
-               // FIXME: assert(!(instruction->MOV_R.d == 15 && state.itstate != 0 && ...LastInITBlock()) 
+               if (instruction->MOV_R.d == 15 && IN_IT_BLOCK && !LAST_IN_IT_BLOCK)
+                  UNPREDICTABLE;
                DECODED;
             }
             else if ((opcode & 0b1110) == 0b1100)
             {  // T1
                instruction->opcode = BX;
                instruction->BX.m = (word >> 3) & 15;
-               // FIXME: If in IT then must be last
+               if (IN_IT_BLOCK && !LAST_IN_IT_BLOCK)
+                  UNPREDICTABLE;
                DECODED;
             }
             else if ((opcode & 0b1110) == 0b1110)
             {
                NOT_DECODED("BLX");
             }
-            // Special data instructions and branch-and-exchange
-            assert(0);            
+            ILLEGAL_OPCODE;
          }
          else if ((opcode & 0b111110) == 0b010010)
          {
@@ -2953,6 +2988,17 @@ void step_machine(int steps)
             state.r[instruction.UXTH.d] = rotated & 0xffff;
             break;
          }
+         case UBFX:
+         {
+            printf(" %s, %s, #0x%x, #0x%x\n", reg_name[instruction.UBFX.d], reg_name[instruction.UBFX.n], instruction.UBFX.lsbit, instruction.UBFX.widthminus1 + 1);
+            CHECK_CONDITION;
+            uint8_t msbit = instruction.UBFX.lsbit + instruction.UBFX.widthminus1;
+            if (msbit <= 31)
+               state.r[instruction.UBFX.d] = (state.r[instruction.UBFX.n] >> instruction.UBFX.lsbit) & ((1 << (instruction.UBFX.widthminus1+1)) - 1);
+            else
+               UNPREDICTABLE;
+            break;
+         }
          default:
             assert(0 && "Opcode not implemented");
       }
@@ -3001,7 +3047,7 @@ int main(int argc, char** argv)
    state.next_instruction = state.PC;
    state.PC = 0;
    printf("Memory mapped. Starting execution at %08x\n", state.next_instruction);
-   step_machine(400);
+   step_machine(500);
    printf("Finished stepping\n");
    return 0;
 }
