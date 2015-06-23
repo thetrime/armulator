@@ -43,10 +43,15 @@ typedef enum
    STR_R,
    LDREX,
    STREX,
-   LDM
+   LDM,
+   ORR_I,
+   UXTH,
+   SUB_I,
+   ORR_R,
+   LDR_R
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr"};
 
 typedef enum
 {
@@ -76,6 +81,7 @@ page_table_t* page_tables = NULL;
 #define CURRENT_PC16 (state.PC-2)
 
 #define LOAD_PC(p) {state.next_instruction = (p) & ~1; state.t = ((p) & 1);}
+#define ALU_LOAD_PC(p) {if (state.t == 0) {LOAD_PC(p)} else {state.next_instruction = p;}}
 
 #define UNKNOWN 0xdeadbeef
 
@@ -160,14 +166,30 @@ typedef struct
       } STR_R;
       struct
       {
+         uint8_t t, n, m, index, add, wback;
+         shift_type_t shift_t;
+         int32_t shift_n;
+      } LDR_R;
+      struct
+      {
          uint8_t n, d;
          int32_t imm32;
       } ADD_I;
       struct
       {
+         uint8_t n, d;
+         int32_t imm32;
+      } SUB_I;
+      struct
+      {
          uint8_t n, d, c;
          int32_t imm32;
       } AND_I;
+      struct
+      {
+         uint8_t n, d, c;
+         int32_t imm32;
+      } ORR_I;
       struct
       {
          uint8_t n, d, c;
@@ -184,6 +206,12 @@ typedef struct
          shift_type_t shift_t;
          int32_t shift_n;
       } ADD_R;
+      struct
+      {
+         uint8_t n, d, m;
+         shift_type_t shift_t;
+         int32_t shift_n;
+      } ORR_R;
       struct
       {
          uint8_t n, d, c;
@@ -294,6 +322,10 @@ typedef struct
          uint16_t registers;
          uint8_t wback;
       } LDM;
+      struct
+      {
+         uint8_t d, m, rotation;
+      } UXTH;
 
    };
 } instruction_t;
@@ -493,7 +525,23 @@ int decode_instruction(instruction_t* instruction)
                   // Data-processing (register)
                   op = (word >> 20) & 31;
                   op2 = (word >> 5) & 3;
-                  if ((op & 0b11110) == 0b01000)
+                  if ((op & 0b11110) == 0b00000)
+                  {
+                     NOT_DECODED("AND_R");
+                  }
+                  else if ((op & 0b11110) == 0b00010)
+                  {
+                     NOT_DECODED("EOR_R");
+                  }
+                  else if ((op & 0b11110) == 0b00100)
+                  {
+                     NOT_DECODED("SUB_R");
+                  }
+                  else if ((op & 0b11110) == 0b00110)
+                  {
+                     NOT_DECODED("RSB_R");
+                  }
+                  else if ((op & 0b11110) == 0b01000)
                   {
                      instruction->opcode = ADD_R;
                      instruction->ADD_R.d = (word >> 12) & 15;
@@ -501,6 +549,44 @@ int decode_instruction(instruction_t* instruction)
                      instruction->ADD_R.m = word & 15;
                      instruction->setflags = (word >> 20) & 1;
                      DecodeImmShift((word >> 5) & 3, (word >> 7) & 31, &instruction->ADD_R.shift_t, &instruction->ADD_R.shift_n);
+                     DECODED;
+                  }
+                  else if ((op & 0b11110) == 0b01010)
+                  {
+                     NOT_DECODED("ADC_R");
+                  }
+                  else if ((op & 0b11110) == 0b01100)
+                  {
+                     NOT_DECODED("SBC_R");
+                  }
+                  else if ((op & 0b11110) == 0b01110)
+                  {
+                     NOT_DECODED("RSC_R");
+                  }
+                  else if (op == 0b10001)
+                  {
+                     NOT_DECODED("TST_R");
+                  }
+                  else if (op == 0b10011)
+                  {
+                     NOT_DECODED("TEQ_R");
+                  }
+                  else if (op == 0b10101)
+                  {
+                     NOT_DECODED("CMP_R");
+                  }
+                  else if (op == 0b10111)
+                  {
+                     NOT_DECODED("CMN_R");
+                  }
+                  else if ((op & 0b11110) == 0b11000)
+                  {  // A1
+                     instruction->opcode = ORR_R;
+                     instruction->ORR_R.d = (word >> 12) & 15;
+                     instruction->ORR_R.n = (word >> 16) & 15;
+                     instruction->ORR_R.m = word & 15;
+                     instruction->setflags = (word >> 20) & 1;
+                     DecodeImmShift((word >> 5) & 3, (word >> 7) & 31, &instruction->ORR_R.shift_t, &instruction->ORR_R.shift_n);
                      DECODED;
                   }
                   else if ((op & 0b11110) == 0b11010)
@@ -520,8 +606,35 @@ int decode_instruction(instruction_t* instruction)
                            NOT_DECODED("LSL_I");
                         }
                      }
+                     else if (op2 == 1)
+                     {
+                        NOT_DECODED("LSR_I");
+                     }
+                     else if (op2 == 2)
+                     {
+                        NOT_DECODED("ASR_I");
+                     }
+                     else if (op2 == 3)
+                     {
+                        if (imm5 == 0)
+                        {
+                           NOT_DECODED("RRX");
+                        }
+                        else
+                        {
+                           NOT_DECODED("ROR_I");
+                        }
+                     }
                   }
-                  assert(0);
+                  else if ((op & 0b11110) == 0b11100)
+                  {
+                     NOT_DECODED("BIC_R");
+                  }
+                  else if ((op & 0b11110) == 0b11110)
+                  {
+                     NOT_DECODED("MVN_R");
+                  }
+                  ILLEGAL_OPCODE;
                }
                else if (((op1 & 0b11001) != 0b10000) && ((op2 & 0b1001) == 1))
                {
@@ -692,8 +805,13 @@ int decode_instruction(instruction_t* instruction)
                   op = (word >> 20) & 31;
                   uint8_t rn = (word >> 16) & 15;
                   if ((op & 0b11110) == 0b00000)
-                  {
-                     NOT_DECODED("AND_I");
+                  {  // A1
+                     instruction->opcode = AND_I;
+                     instruction->AND_I.d = (word >> 12) & 15;
+                     instruction->AND_I.n = (word >> 16) & 15;
+                     instruction->setflags = (word >> 20) & 1;
+                     instruction->AND_I.imm32 = ARMExpandImm_C(word & 0xfff, state.c, &instruction->AND_I.c);
+                     DECODED;
                   }
                   else if ((op & 0b11110) == 0b000010)
                   {
@@ -702,9 +820,18 @@ int decode_instruction(instruction_t* instruction)
                   else if ((op & 0b11110) == 0b00100)
                   {
                      if (rn != 15)
-                        NOT_DECODED("SUB_I");
+                     {  // A1
+                        instruction->opcode = SUB_I;
+                        instruction->SUB_I.d = (word >> 12) & 15;
+                        instruction->SUB_I.n = (word >> 16) & 15;
+                        instruction->setflags = (word >> 20) & 1;
+                        instruction->SUB_I.imm32 = ARMExpandImm(word & 0xfff);
+                        DECODED;
+                     }
                      else
+                     {
                         NOT_DECODED("ADR");
+                     }
                   }
                   else if ((op & 0b11110) == 0b01000)
                   {
@@ -781,14 +908,23 @@ int decode_instruction(instruction_t* instruction)
                   ILLEGAL_OPCODE;
                }
                else if (op1 == 0b10000)
-               {
+               {  // A2
                   // 16-bit immediate load, MOV(immediate)
-                  assert(0);
+                  instruction->opcode = MOV_I;
+                  instruction->MOV_I.d = (word >> 12) & 15;
+                  instruction->setflags = 0;
+                  instruction->MOV_I.imm32 = ((word >> 4) & 0xf000) | (word & 0x0fff);
+                  DECODED;
                }
                else if (op1 == 0b10100)
-               {
+               {  // A1
                   // High halfword 16-bit immediate load, MOVT
-                  assert(0);
+                  instruction->opcode = MOVT;
+                  instruction->MOVT.d = (word >> 12) & 15;
+                  instruction->MOVT.imm16 = ((word >> 4) & 0xf000) | (word & 0x0fff);
+                  if (instruction->MOVT.d == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if ((op1 & 0b11011) == 0b10010)
                {
@@ -814,7 +950,18 @@ int decode_instruction(instruction_t* instruction)
             }
 
             if (A == 0 && ((op1 & 0b00101) == 0) && !((op1 & 0b10111) == 0b00010))
-              NOT_DECODED("STR_I");
+            {  // A1
+               instruction->opcode = STR_I;
+               instruction->STR_I.t = (word >> 12) & 15;
+               instruction->STR_I.n = (word >> 16) & 15;
+               instruction->STR_I.imm32 = word & 0xfff;
+               instruction->STR_I.index = (word >> 24) & 1;
+               instruction->STR_I.add = (word >> 23) & 1;
+               instruction->STR_I.wback = (((word >> 24) & 1) == 0 || (((word >> 21) & 1) == 1))?1:0;
+               if (instruction->STR_I.wback && (instruction->STR_I.n == 15 || instruction->STR_I.n == instruction->STR_I.t))
+                  UNPREDICTABLE;
+               DECODED;
+            }
             else if (A == 1 && ((op1 & 0b00101) == 0) && !((op1 & 0b10111) == 0b00010))
               NOT_DECODED("STR_R");
             else if ((A == 0 && ((op1 & 0b10111) == 0b00010)) || (A == 1 && ((op1 & 0b10111) == 0b00010) && B == 0))
@@ -859,7 +1006,21 @@ int decode_instruction(instruction_t* instruction)
                }
             }
             else if (A == 1 && ((op1 & 0b00101) == 0b00001) && !((op1 & 0b10111) == 0b00011) && B == 0)
-               NOT_DECODED("LDR_R");
+            {  // A1
+               instruction->opcode = LDR_R;
+               instruction->LDR_R.t = (word >> 12) & 15;
+               instruction->LDR_R.n = (word >> 16) & 15;
+               instruction->LDR_R.m = word & 15;
+               instruction->LDR_R.index = (word >> 24) & 1;
+               instruction->LDR_R.add = (word >> 23) & 1;
+               instruction->LDR_R.wback = ((((word >> 24) & 1) == 0) || (((word >> 21) & 1) == 1))?1:0;
+               DecodeImmShift((word >> 5) & 3, (word >> 7) & 31, &instruction->LDR_R.shift_t, &instruction->LDR_R.shift_n);
+               if (instruction->LDR_R.m == 15)
+                  UNPREDICTABLE;
+               if (instruction->LDR_R.wback && (instruction->LDR_R.n == 15 || instruction->LDR_R.n == instruction->LDR_R.t))
+                  UNPREDICTABLE;
+               DECODED;
+            }
             else if ((A == 0 && ((op1 & 0b10111) == 0b00011)) || (A == 1 && ((op1 & 0b10111) == 0b00011) && B == 0))
                NOT_DECODED("LDRT");
             else if (A == 0 && ((op1 & 0b00101) == 0b00101) && ((op1 & 0b10111) != 0b00110))
@@ -940,7 +1101,7 @@ int decode_instruction(instruction_t* instruction)
             NOT_DECODED("RFE");
          }
          else if ((op1 & 0b11100000) == 0b10100000)
-         {
+         {  // A2
             instruction->opcode = BLX;
             instruction->BL.t = 1;
             instruction->BL.imm32 = SignExtend(24, ((word & 0xffffff) << 2) | ((word >> 23) & 2), 32);
@@ -1095,8 +1256,15 @@ int decode_instruction(instruction_t* instruction)
                   NOT_DECODED("BIC_I");
                }
                else if (op == 2 && Rn != 15)
-               {
-                  NOT_DECODED("ORR_I");
+               {  // T1
+                  instruction->opcode = ORR_I;
+                  instruction->ORR_I.d = (word2 >> 8) & 15;
+                  instruction->ORR_I.n = word & 15;
+                  instruction->setflags = (word >> 4) & 1;
+                  instruction->ORR_I.imm32 = ThumbExpandImm_C(((word << 16) | word2), state.c, &instruction->ORR_I.c);
+                  if (instruction->MOV_I.d == 13 || instruction->MOV_I.d == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op == 2 && Rn == 15)
                {  // T2
@@ -1339,7 +1507,7 @@ int decode_instruction(instruction_t* instruction)
                   uint8_t I1 = ~(J1 ^ S) & 1;
                   uint8_t I2 = ~(J2 ^ S) & 1;
                   instruction->opcode = B;
-                  instruction->B.imm32 = SignExtend(25, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
+                  instruction->B.imm32 = SignExtend(24, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
                   if (state.itstate != 0) UNPREDICTABLE;
                   DECODED;
                }
@@ -1358,7 +1526,7 @@ int decode_instruction(instruction_t* instruction)
                   instruction->opcode = BLX;
                   instruction->BL.t = 0;
                   assert((word2 & 1) != 1);
-                  instruction->BL.imm32 = SignExtend(25, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
+                  instruction->BL.imm32 = SignExtend(24, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
                   DECODED;
                }
                if ((op1 & 0b101) == 0b101)
@@ -1898,8 +2066,12 @@ int decode_instruction(instruction_t* instruction)
                NOT_DECODED("SXTB");
             }
             else if ((opcode & 0b1111110) == 0b0010100)
-            {
-               NOT_DECODED("UXTH");
+            {  // T1
+               instruction->opcode = UXTH;
+               instruction->UXTH.d = word & 7;
+               instruction->UXTH.m = (word >> 3) & 7;
+               instruction->UXTH.rotation = 0;
+               DECODED;
             }
             else if ((opcode & 0b1111110) == 0b0010110)
             {
@@ -2225,6 +2397,36 @@ void step_machine(int steps)
             }
             break;
          }
+         case LDR_R:
+         {
+            uint32_t offset;
+            uint32_t data;
+            if (instruction.LDR_R.shift_t == LSL && instruction.LDR_R.shift_n == 0) printf(" %s, [%s, %s%s]\n", reg_name[instruction.LDR_R.t], reg_name[instruction.LDR_R.n], instruction.LDR_R.add?"":"-", reg_name[instruction.LDR_R.m]);
+            else printf(" %s, [%s, %s%s %s %d]\n", reg_name[instruction.LDR_R.t], reg_name[instruction.LDR_R.n], instruction.LDR_R.add?"":"-", reg_name[instruction.LDR_R.m], shift_name[instruction.LDR_R.shift_t], instruction.LDR_R.shift_n);
+            CHECK_CONDITION;
+            Shift(32, state.r[instruction.LDR_R.m], instruction.LDR_R.shift_t, instruction.LDR_R.shift_n, state.c, &offset);
+            uint32_t offset_address = state.r[instruction.LDR_R.n] + (instruction.LDR_R.add?offset:(-offset));
+            uint32_t address = instruction.LDR_R.index?offset_address:state.r[instruction.LDR_R.n];
+            data = read_mem(4, address);
+            if (instruction.LDR_R.wback)
+               state.r[instruction.LDR_R.n] = offset_address;
+            if (instruction.LDR_R.t == 15)
+            {
+               if ((address & 3) == 0)
+               {
+                  LOAD_PC(data);
+               }
+               else
+               {
+                  UNPREDICTABLE;
+               }
+            }
+            else if ((address & 3) == 0)
+               state.r[instruction.LDR_R.t] = data;
+            else
+               assert(0 && "Garbage read");
+            break;
+         }
          case ADD_I:
          {
             printf(" %s, %s, #%d\n", reg_name[instruction.ADD_I.d], reg_name[instruction.ADD_I.n], instruction.ADD_I.imm32);
@@ -2233,7 +2435,14 @@ void step_machine(int steps)
             uint8_t carry_out;
             uint8_t overflow_out;
             AddWithCarry(state.r[instruction.ADD_I.n], instruction.ADD_I.imm32, 0, &result, &carry_out, &overflow_out);
-            state.r[instruction.ADD_I.d] = result;
+            if (instruction.ADD_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.ADD_I.d] = result;
+            }
             if (instruction.setflags)
             {
                state.n = (result >> 31) & 1;
@@ -2243,18 +2452,73 @@ void step_machine(int steps)
             }
             break;
          }
+         case SUB_I:
+         {
+            printf(" %s, %s, #%d\n", reg_name[instruction.ADD_I.d], reg_name[instruction.ADD_I.n], instruction.ADD_I.imm32);
+            CHECK_CONDITION;
+            uint32_t result;
+            uint8_t carry_out;
+            uint8_t overflow_out;
+            AddWithCarry(state.r[instruction.ADD_I.n], ~~instruction.ADD_I.imm32, 1, &result, &carry_out, &overflow_out);
+            if (instruction.ADD_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.ADD_I.d] = result;
+            }
+            if (instruction.setflags)
+            {
+               state.n = (result >> 31) & 1;
+               state.z = (result == 0);
+               state.c = carry_out;
+               state.v = overflow_out;
+            }
+            break;
+         }
+
          case AND_I:
          {
             printf(" %s, %s, #0x%x\n", reg_name[instruction.AND_I.d], reg_name[instruction.AND_I.n], instruction.AND_I.imm32);
             CHECK_CONDITION;
             uint32_t result;
-            result = state.r[instruction.AND_I.n] & instruction.AND_I.imm32;         
-            state.r[instruction.AND_I.d] = result;
+            result = state.r[instruction.AND_I.n] & instruction.AND_I.imm32;
+            if (instruction.AND_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.AND_I.d] = result;
+            }
             if (instruction.setflags && instruction.AND_I.d != 15)
             {
                state.n = (result >> 31) & 1;
                state.z = (result == 0);
                state.c = instruction.AND_I.c;
+            }
+            break;
+         }
+         case ORR_I:
+         {
+            printf(" %s, %s, #0x%x\n", reg_name[instruction.ORR_I.d], reg_name[instruction.ORR_I.n], instruction.ORR_I.imm32);
+            CHECK_CONDITION;
+            uint32_t result;
+            result = state.r[instruction.ORR_I.n] | instruction.ORR_I.imm32;         
+            if (instruction.ORR_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.ORR_I.d] = result;
+            }
+            if (instruction.setflags && instruction.ORR_I.d != 15)
+            {
+               state.n = (result >> 31) & 1;
+               state.z = (result == 0);
+               state.c = instruction.ORR_I.c;
             }
             break;
          }
@@ -2265,7 +2529,14 @@ void step_machine(int steps)
             CHECK_CONDITION;
             uint32_t result;
             result = state.r[instruction.EOR_I.n] ^ instruction.EOR_I.imm32;         
-            state.r[instruction.EOR_I.d] = result;
+            if (instruction.EOR_I.d == 15 && state.t == 0)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.EOR_I.d] = result;
+            }
             if (instruction.setflags && instruction.EOR_I.d != 15)
             {
                state.n = (result >> 31) & 1;
@@ -2295,7 +2566,14 @@ void step_machine(int steps)
             CHECK_CONDITION;
             Shift(32, state.r[instruction.ADD_R.m], instruction.ADD_R.shift_t, instruction.ADD_R.shift_n, state.c, &shifted);
             AddWithCarry(state.r[instruction.ADD_R.n], shifted, 0, &result, &carry_out, &overflow_out);
-            state.r[instruction.ADD_I.d] = result;
+            if (instruction.ADD_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.ADD_I.d] = result;
+            }
             if (instruction.setflags)
             {
                state.n = (result >> 31) & 1;
@@ -2305,6 +2583,33 @@ void step_machine(int steps)
             }
             break;
          }
+         case ORR_R:
+         {
+            uint32_t shifted;
+            uint32_t result;
+            uint8_t carry_out;
+            if (instruction.ORR_R.shift_t == LSL && instruction.ORR_R.shift_n == 0) printf(" %s, %s, %s\n", reg_name[instruction.ORR_R.d], reg_name[instruction.ORR_R.n], reg_name[instruction.ORR_R.m]);
+            else printf(" %s, %s, %s %s %d\n", reg_name[instruction.ORR_R.d], reg_name[instruction.ORR_R.n], reg_name[instruction.ORR_R.m], shift_name[instruction.ORR_R.shift_t], instruction.ORR_R.shift_n);
+            CHECK_CONDITION;
+            Shift_C(32, state.r[instruction.ORR_R.m], instruction.ORR_R.shift_t, instruction.ORR_R.shift_n, state.c, &shifted, &carry_out);
+            result = state.r[instruction.ORR_R.n] | shifted;
+            if (instruction.ORR_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.ORR_I.d] = result;
+            }
+            if (instruction.setflags)
+            {
+               state.n = (result >> 31) & 1;
+               state.z = (result == 0);
+               state.c = carry_out;
+            }
+            break;
+         }
+
          case BIC_I:
          {
             uint32_t result = state.r[instruction.BIC_I.n] & ~instruction.BIC_I.imm32;
@@ -2638,6 +2943,16 @@ void step_machine(int steps)
                UNKNOWN;            
             break;
          }
+         case UXTH:
+         {
+            if (instruction.UXTH.rotation == 0) printf("%s, %s\n", reg_name[instruction.UXTH.d], reg_name[instruction.UXTH.m]);
+            else printf("%s, %s, %d\n", reg_name[instruction.UXTH.d], reg_name[instruction.UXTH.m], instruction.UXTH.rotation);
+            CHECK_CONDITION;
+            uint32_t rotated;
+            Shift(32, state.r[instruction.UXTH.m], ROR, instruction.UXTH.rotation, 0, &rotated);
+            state.r[instruction.UXTH.d] = rotated & 0xffff;
+            break;
+         }
          default:
             assert(0 && "Opcode not implemented");
       }
@@ -2686,7 +3001,7 @@ int main(int argc, char** argv)
    state.next_instruction = state.PC;
    state.PC = 0;
    printf("Memory mapped. Starting execution at %08x\n", state.next_instruction);
-   step_machine(300);
+   step_machine(400);
    printf("Finished stepping\n");
    return 0;
 }
