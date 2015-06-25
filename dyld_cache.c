@@ -58,7 +58,7 @@ int try_cache(char* filename)
    uint64_t* address;
    if (map_get(cache_map, filename, (void**)&address))
    {
-      printf("--- Cache hit for %s! (%08x)\n", filename, *address);
+      printf("--- Cache hit for %s! (%08llx)\n", filename, *address);
       parse_executable(&cache_data[*address], *address, filename);
       return 1;      
    }

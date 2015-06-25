@@ -8,6 +8,7 @@
 #include "stubs.h"
 #include "machine.h"
 #include "hardware.h"
+#include "coprocessor.h"
 #include "symtab.h"
 
 typedef enum
@@ -49,10 +50,11 @@ typedef enum
    SUB_I,
    ORR_R,
    LDR_R,
-   UBFX
+   UBFX,
+   MRC
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc"};
 
 typedef enum
 {
@@ -144,6 +146,8 @@ typedef struct
    opcode_t opcode;
    uint8_t setflags;
    uint32_t source_address;
+   uint32_t this_instruction;
+   uint8_t this_instruction_length;
    union
    {
       struct
@@ -333,6 +337,10 @@ typedef struct
       {
          uint8_t d, n, lsbit, widthminus1;
       } UBFX;
+      struct
+      {
+         uint8_t t, cp, cn, cm, opc1, opc2;
+      } MRC;
    };
 } instruction_t;
 
@@ -505,11 +513,13 @@ void initialize_state()
 
 int decode_instruction(instruction_t* instruction)
 {
-   printf("instruction at = %08x, SP = %08x, r2 = %08x)\n", state.next_instruction, state.SP, state.r[2]);
+   //printf("instruction at = %08x, SP = %08x, r2 = %08x)\n", state.next_instruction, state.SP, state.r[2]);
    instruction->source_address = state.next_instruction;
    if (state.t == 0) // ARM mode
    {
       uint32_t word = read_mem(4, state.next_instruction);
+      instruction->this_instruction = word;
+      instruction->this_instruction_length = 32;
       state.PC = state.next_instruction + 8;
       state.next_instruction += 4;
       instruction->condition = ((word >> 28) & 15);
@@ -940,20 +950,13 @@ int decode_instruction(instruction_t* instruction)
             }               
             assert(0 && "Illegal opcode");
          }
-         else if ((op1 & 0b010) == 0b010)
+         else if ((op1 == 0b010) || (op1 == 0b011 && op == 0))
          {
-            // Load store word and unsigned byte (and media instruction)            
-            // load/store word and unsigned byte
+            // Load store word and unsigned byte
             uint8_t A = (word >> 25) & 1;
             uint8_t B = (word >> 4) & 1;
             uint8_t op1 = (word >> 20) & 31;
-            uint8_t Rn = (word >> 16) & 15;
-            
-            if (A == 1 && B == 1)
-            {
-               // Media instruction
-               assert(0 && "Media not implemented");
-            }
+            uint8_t Rn = (word >> 16) & 15;                      
 
             if (A == 0 && ((op1 & 0b00101) == 0) && !((op1 & 0b10111) == 0b00010))
             {  // A1
@@ -977,7 +980,7 @@ int decode_instruction(instruction_t* instruction)
                if (Rn != 15)
                {
                   uint8_t P = (word >> 24) & 1;
-                  uint8_t W = (word >> 24) & 1;
+                  uint8_t W = (word >> 21) & 1;
                   uint8_t U = (word >> 23) & 1;
                   uint16_t imm12 = word & 0xfff;
                   uint8_t Rn = (word >> 16) & 15;
@@ -1047,6 +1050,54 @@ int decode_instruction(instruction_t* instruction)
             else if ((A == 0 && ((op & 0b10111) == 0b00111)) || (A == 1 && ((op1 & 0b10111) == 0b10111) && B == 0))
                NOT_DECODED("LDRBT");                                                                                
          }
+         else if (op1 == 0b011 && op == 1)
+         {
+            // Media instructions
+            uint8_t op1 = (word >> 20) & 31;
+            uint8_t op2 = (word >> 5) & 7;
+            uint8_t Rd = (word >> 12) & 15;
+            uint8_t Rn = word & 15;
+            if ((op1 & 0b11100) == 0)
+            {
+               // Parallel addition and subtraction, signed
+               assert(0);
+            }
+            else if ((op1 & 0b11100) == 0b00100)
+            {
+               // Parallel addition and subtraction, unsigned
+               assert(0);
+            }
+            else if ((op1 & 0b11000) == 0b01000)
+            {
+               // Packing, unpacking, saturation, reversal
+               assert(0);
+            }
+            else if ((op1 & 0b11000) == 0b10000)
+            {
+               // Signed multiply, signed and unsigned divide
+               assert(0);
+            }
+            else if (op1 == 0b11000 && op2 == 0b000)
+            {
+               if (Rd == 0b111)
+                  NOT_DECODED("USAD8");
+               else
+                  NOT_DECODED("USADA8");
+            }
+            else if (((op1 & 0b11110) == 0b11010) && ((op2 & 0b011) == 0b010))
+               NOT_DECODED("SBFX");
+            else if (((op1 & 0b11110) == 0b11010) && ((op2 & 0b011) == 0b000))
+            {
+               if (Rn == 15)
+                  NOT_DECODED("BFC");
+               else
+                  NOT_DECODED("BFI");
+            }
+            else if (((op1 & 0b11110) == 0b11110) && ((op2 & 0b011) == 0b010))
+               NOT_DECODED("UBFX");
+            else if (op1 == 0b11111 && op2 == 0b111)
+               assert(0 && "Permanently UNDEFINED");
+         }
          else if ((op1 & 0b110) ==  0b100)
          {
             // B, BL, block data transfer
@@ -1084,7 +1135,71 @@ int decode_instruction(instruction_t* instruction)
          else if ((op1 & 0b110) == (0b110))
          {
             // Coprocessor
-            assert(0 && "Coprocessor not implemented");
+            uint8_t coproc = (word >> 8) & 15;
+            uint8_t op1 = (word >> 20) & 63;
+            uint8_t Rn = (word >> 16) & 15;
+            uint8_t op = (word >> 4) & 1;
+            if ((op1 & 0b111110) == 0)
+               assert(0 && "Permanently UNDEFINED");
+            else if ((op1 & 0b110000) == 0b110000)
+               NOT_DECODED("SVC");
+            else if ((coproc & 0b1110) != 0b1010)
+            {
+               if ((op1 & 0b100001) == 0 && !((op1 & 0b111011) == 0))
+                  NOT_DECODED("STC/2");
+               else if ((op1 & 0b100001) == 1 && !((op1 & 0b111011) == 1))
+               {
+                  if (Rn != 15)
+                     NOT_DECODED("LDC_I");
+                  else
+                     NOT_DECODED("LDC_L");
+               }
+               else if (op1 == 0b000100)
+                  NOT_DECODED("MCRR");
+               else if (op1 == 0b000101)
+                  NOT_DECODED("MRRC");
+               else if ((op1 & 0b110000) == 0b100000 && op == 0)
+                  NOT_DECODED("CDP/2");
+               else if ((op1 & 0b110001) == 0b100000 && op == 1)
+                  NOT_DECODED("MCR/2");
+               else if ((op1 & 0b110001) == 0b100001 && op == 1)
+               {  // A1
+                  instruction->opcode = MRC;
+                  instruction->MRC.t = (word >> 12) & 15;
+                  instruction->MRC.cp = (word >> 8) & 15;
+                  instruction->MRC.opc1 = (word >> 21) & 7;
+                  instruction->MRC.opc2 = (word >> 5) & 7;
+                  instruction->MRC.cm = word & 15;
+                  instruction->MRC.cn = (word >> 16) & 15;
+                  if (instruction->MRC.t && state.t != 0)
+                     UNPREDICTABLE;
+                  DECODED;
+               }
+            }
+            else
+            {
+               if ((op1 & 0b100000) == 0 && !((op1 & 0b111010) == 0))
+               {
+                  // Extension register load/store
+                  assert(0);
+               }
+               else if ((op1 & 0b111110) == 0b000100)
+               {
+                  // 64-bit transfers between ARM core and extension registers
+                  assert(0);
+               }
+               else if (((op1 & 0b110000) == 0b100000) && op == 0)
+               {
+                  // Floating point data processing
+                  assert(0);
+               }
+               else if (((op1 & 0b110000) == 0b100000) && op == 1)
+               {
+                  // 8, 16 and 32-bit transfer between ARM core and extension registers
+                  assert(0);
+               }
+            }
+            ILLEGAL_OPCODE;
          }         
       }
       else
@@ -1126,6 +1241,8 @@ int decode_instruction(instruction_t* instruction)
       {
          // 32-bit thumb
          uint16_t word2 = read_mem(2, state.next_instruction);
+         instruction->this_instruction = (word << 16) | word2;
+         instruction->this_instruction_length = 32;         
          // Do NOT change state.PC here for a 2-cycle decode! 
          state.next_instruction += 2;
          uint8_t op1 = (word >> 11) & 3;
@@ -1743,6 +1860,8 @@ int decode_instruction(instruction_t* instruction)
       else
       {
          // 16-bit thumb
+         instruction->this_instruction = word;
+         instruction->this_instruction_length = 16;
          uint8_t opcode = (word >> 10) & 63;
          if ((opcode & 0b110000) == 0)
          {
@@ -1800,8 +1919,13 @@ int decode_instruction(instruction_t* instruction)
                DECODED;
             }
             else if ((opcode & 0b11100) == 0b11000)
-            {
-               NOT_DECODED("ADD_I");
+            {  // T2
+               instruction->opcode = ADD_I;
+               instruction->ADD_I.d = (word >> 8) & 7;
+               instruction->ADD_I.n = (word >> 8) & 7;
+               instruction->setflags = !IN_IT_BLOCK;
+               instruction->ADD_I.imm32 = word & 255;
+               DECODED;
             }
             else if ((opcode & 0b11100) == 0b11100)
             {
@@ -2999,6 +3123,28 @@ void step_machine(int steps)
                UNPREDICTABLE;
             break;
          }
+         case MRC:
+         {
+            printf(" p%d, #0x%x, %s, c%d, c%d, #0x%x\n", instruction.MRC.cp, instruction.MRC.opc1, reg_name[instruction.MRC.t], instruction.MRC.cn, instruction.MRC.cm, instruction.MRC.opc2);
+            CHECK_CONDITION;
+            // ok, here we go...
+            if (!coproc_accept(instruction.MRC.cp, instruction.this_instruction))
+               assert(0 && "Coprocessor exception");
+            uint32_t value = coproc_read(4, instruction.MRC.cp, instruction.MRC.cn, instruction.MRC.opc1, instruction.MRC.cm, instruction.MRC.opc2);
+            if (instruction.MRC.t != 15)
+            {
+               state.r[instruction.MRC.t] = value;
+            }
+            else
+            {
+               // Write to ASPR.NZCV
+               state.n = (value >> 31) & 1;
+               state.z = (value >> 30) & 1;
+               state.c = (value >> 20) & 1;
+               state.v = (value >> 28) & 1;
+            }
+            break;
+         }
          default:
             assert(0 && "Opcode not implemented");
       }
@@ -3038,7 +3184,8 @@ int main(int argc, char** argv)
       printf("Usage: %s <executable>\n", argv[0]);
       return -1;
    }
-   configure_hardware();   
+   configure_hardware();
+   configure_coprocessors();   
    prepare_loader();
    register_stubs();
    load_executable(argv[1]);
@@ -3047,7 +3194,7 @@ int main(int argc, char** argv)
    state.next_instruction = state.PC;
    state.PC = 0;
    printf("Memory mapped. Starting execution at %08x\n", state.next_instruction);
-   step_machine(500);
+   step_machine(600);
    printf("Finished stepping\n");
    return 0;
 }

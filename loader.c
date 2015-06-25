@@ -279,6 +279,7 @@ int load_dylib(char* base, char* filename)
       printf("Found at %s\n", dylib_name);
       load_executable(dylib_name);
       free(dylib_name);
+      return 1;
    }
    else
    {
@@ -498,7 +499,7 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
          case LC_UNIXTHREAD:
          {
             uint32_t* base = ((uint32_t*)((char*)command + sizeof(struct thread_command)));
-            uint32_t flavor = base[0];
+            //uint32_t flavor = base[0];
             uint32_t count = base[1];
             assert(count == 17); // Ordinary threadstate
             state.r[0] = base[2];
@@ -690,4 +691,8 @@ void prepare_loader()
    map_memory(hypervisor_break, 0xfffffff0, 4);
    write_mem(4, 0xfffffff0, BREAK32);
    load_dyld_cache("dyld_shared_cache_armv7");
+
+   unsigned char* tls = calloc(2048, 1);
+   map_memory(tls, 0x80000000, 2048);
+   
 }
