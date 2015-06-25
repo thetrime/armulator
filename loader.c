@@ -404,7 +404,7 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
                   initial_pc = s->addr;                  
                }
                chunk = calloc(s->size, 1);
-               if (!((s->flags & S_ZEROFILL) == S_ZEROFILL))
+               if (!((s->flags & 0xff) == S_ZEROFILL))
                {
                   uint64_t file_base = 0;
                   // I do not understand this; some of the sections have fileoff relative to the start of the image, but some are absolute from the start of the file
@@ -515,7 +515,7 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
             state.r[10] = base[12];
             state.r[11] = base[13];
             state.r[12] = base[14];
-            state.r[13] = base[15];
+            //state.r[13] = base[15];   // Do not destroy the stack!
             state.r[14] = base[16];
             state.r[15] = base[17];
             //state.cspr = base[??];
@@ -601,6 +601,17 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
             struct nlist* ptr = &symbol_table[indirect_table[j]];
             printf("%s needs symbol %s at %08lx\n", filename, &string_table[ptr->n_un.n_strx], section->base_address + (sizeof(uint32_t) * j));
             need_symbol(&string_table[ptr->n_un.n_strx], section->base_address + (sizeof(uint32_t) * j));
+         }
+      }
+      if (section->flags == S_MOD_INIT_FUNC_POINTERS)
+      {
+         // This section contains just pointers to bits of code we have to execute to initialize it
+         uint32_t initializers_this_section = section->size / sizeof(uint32_t);
+         for (int j = 0; j < initializers_this_section; j++)
+         {
+            printf("Running initializer at %08x in binary %s\n", section->base_address + 4*j, filename);
+            uint32_t address = read_mem(4, section->base_address + 4*j);
+            _execute_function(1, read_mem(4, section->base_address + 4*j));
          }
       }
    }

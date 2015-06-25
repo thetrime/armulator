@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+
 #include "arm.h"
 #include "loader.h"
 #include "stubs.h"
@@ -51,10 +53,12 @@ typedef enum
    ORR_R,
    LDR_R,
    UBFX,
-   MRC
+   MRC,
+   STM,
+   STRD_I
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd"};
 
 typedef enum
 {
@@ -171,6 +175,11 @@ typedef struct
          shift_type_t shift_t;
          int32_t shift_n;
       } STR_R;
+      struct
+      {
+         uint8_t t, t2, n, index, add, wback;
+         int32_t imm32;        
+      } STRD_I;
       struct
       {
          uint8_t t, n, m, index, add, wback;
@@ -341,6 +350,11 @@ typedef struct
       {
          uint8_t t, cp, cn, cm, opc1, opc2;
       } MRC;
+      struct
+      {
+         uint8_t n, wback;
+         uint16_t registers;
+      } STM;
    };
 } instruction_t;
 
@@ -1271,8 +1285,16 @@ int decode_instruction(instruction_t* instruction)
                else if (op == 1)
                {
                   if (L == 0)
-                  {
-                     NOT_DECODED("STM");
+                  {  // T2
+                     instruction->opcode = STM;
+                     instruction->STM.n = word & 15;
+                     instruction->STM.registers = word2;
+                     instruction->STM.wback = (word >> 5) & 1;
+                     if (instruction->STM.n == 15 || BitCount(word2) < 2)
+                        UNPREDICTABLE;
+                     if (instruction->STM.wback && (((instruction->STM.registers >> instruction->STM.n) & 1) == 1))
+                        UNPREDICTABLE;
+                     DECODED;
                   }
                   else
                   {
@@ -1330,7 +1352,51 @@ int decode_instruction(instruction_t* instruction)
             else if ((op2 & 0b1100100) == 0b0000100)
             {
                // Load/store dual
-               assert(0);
+               uint8_t op1 = (word >> 7) & 3;
+               uint8_t op2 = (word >> 4) & 3;
+               uint8_t op3 = (word2 >> 4) & 15;
+               uint8_t Rn = word & 15;
+               if (op1 == 0 && op2 == 0)
+                  NOT_DECODED("STREX");
+               else if (op1 == 0 && op2 == 1)
+                  NOT_DECODED("LDREX");
+               else if (((op1 & 0b10) == 0 && op2 == 0b10) || (((op1 & 0b10) == 0b010) && ((op2 & 0b01) == 0)))
+               {
+                  instruction->opcode = STRD_I;
+                  instruction->STRD_I.t = (word2 >> 12) & 15;
+                  instruction->STRD_I.t2 = (word2 >> 8) & 15;
+                  instruction->STRD_I.n = word & 15;
+                  instruction->STRD_I.imm32 = (word2 & 0xff) << 2;
+                  instruction->STRD_I.index = (word >> 8) & 1;
+                  instruction->STRD_I.add = (word >> 7) & 1;
+                  instruction->STRD_I.wback = (word >> 5) & 1;
+                  if (instruction->STRD_I.wback && (instruction->STRD_I.n == instruction->STRD_I.t || instruction->STRD_I.n == instruction->STRD_I.t2))
+                     UNPREDICTABLE;
+                  if (instruction->STRD_I.n == 15 || instruction->STRD_I.t == 13 || instruction->STRD_I.t == 15 || instruction->STRD_I.t2 == 13 || instruction->STRD_I.t2 == 15)
+                     UNPREDICTABLE;
+                  DECODED;
+               }
+               else if ((((op1 & 0b10) == 0) && (op2 == 0b11) && Rn != 15) || (((op1 & 0b10) == 0b10) && ((op2 & 0b01) == 0b01) && Rn != 15))
+                  NOT_DECODED("LDRD_I"); // T1, both cases
+               else if ((((op1 & 0b10) == 0) && (op2 == 0b11) && Rn == 15) || (((op1 & 0b10) == 0b10) && ((op2 & 0b01) == 0b01) && Rn == 15))
+                  NOT_DECODED("LDRD_L"); // T1, both cases
+               else if (op1 == 1 && op2 == 0 && op3 == 4)
+                  NOT_DECODED("STDEXB");
+               else if (op1 == 1 && op2 == 0 && op3 == 5)
+                  NOT_DECODED("STREXH");
+               else if (op1 == 1 && op2 == 0 && op3 == 7)
+                  NOT_DECODED("STREXD");
+               else if (op1 == 1 && op2 == 1 && op3 == 0)
+                  NOT_DECODED("TBB");
+               else if (op1 == 1 && op2 == 1 && op3 == 1)
+                  NOT_DECODED("TBH");
+               else if (op1 == 1 && op2 == 1 && op3 == 4)
+                  NOT_DECODED("LDREXB");
+               else if (op1 == 1 && op2 == 1 && op3 == 5)
+                  NOT_DECODED("LDREXH");
+               else if (op1 == 1 && op2 == 1 && op3 == 7)
+                  NOT_DECODED("LDREXD");
+               ILLEGAL_OPCODE;
             }
             else if ((op2 & 0b1100000) == 0b0100000)
             {
@@ -3145,6 +3211,32 @@ void step_machine(int steps)
             }
             break;
          }
+         case STM:
+         {
+            printf(" %s%s { ", reg_name[instruction.STM.n], instruction.STM.wback?"!":"");
+            uint8_t c = condition_passed(instruction.condition);
+            uint32_t address = state.r[instruction.STM.n];
+            for (int i = 0; i <= 15; i++)
+            {
+               if (instruction.STM.registers & (1 << i))
+               {
+                  printf("%s ", reg_name[i]);
+                  if (i == instruction.STM.n && instruction.STM.wback && i != LowestSetBit(instruction.STM.registers))
+                  {
+                     if (c) write_mem(4, address, UNKNOWN);
+                  }
+                  else
+                  {
+                     if (c) write_mem(4, address, state.r[i]);
+                  }
+                  address += 4;
+               }
+               if (instruction.STM.wback && c)
+                  state.r[instruction.STM.n] += 4*BitCount(instruction.STM.registers);
+            }
+            printf("}\n");
+            break;
+         }
          default:
             assert(0 && "Opcode not implemented");
       }
@@ -3164,16 +3256,45 @@ void restore_state(state_t* src)
    memcpy(&state, src, sizeof(state_t));
 }
 
-uint32_t execute_function(uint32_t address)
-{   
+void allocate_stack()
+{
+   state.SP = 0xd0000000; // FIXME: CRITICAL: Nope!
+}
+
+uint32_t _execute_function(int argc, ...)
+{
+   va_list args;
    state_t state_copy;
+   uint32_t address;
+   assert(argc > 0);
+   
    save_state(&state_copy);
+   allocate_stack();
+   va_start(args, argc);
+   address = va_arg(args, uint32_t);
+   printf("Address: %08x\n", address);
    LOAD_PC(address);
-   // FIXME: CRITICAL: stack may not be available at this point as load_executable may have scribbled all over the state!
-   state.LR = 0xfffffff0; // Hypervisor break
-   step_machine(30); // FIXME: Not 30, until we return!
-   uint32_t retval = state.r[0];
-   restore_state(&state_copy);
+   argc--;
+   if (argc > 4)
+      state.SP -= (4 * (argc - 4)); // Make space on the stack if needed
+   printf("Argc: %d (executing from address %08x)\n", argc, address);
+   for (int i = 0; i < argc; i++)
+   {
+      if (i < 4)
+      {  // First 4 args in registers
+         state.r[i] = va_arg(args, uint32_t);
+      }
+      else
+      {  // Remaining args on the stack
+         write_mem(4, state.SP, va_arg(args, uint32_t));
+         state.SP += 4;
+      }         
+   }
+   va_end(args);   
+   state.LR = 0xfffffff0; // Return to hypervisor break
+   step_machine(3000); // FIXME: Not 3000, until we return!
+   uint32_t retval = state.r[0]; // Return r0
+   restore_state(&state_copy);   // After restoring the state. Note that we may not actually have to do this....
    return retval;
 }
 
@@ -3185,11 +3306,11 @@ int main(int argc, char** argv)
       return -1;
    }
    configure_hardware();
-   configure_coprocessors();   
+   configure_coprocessors();
+   initialize_state();
    prepare_loader();
    register_stubs();
    load_executable(argv[1]);
-   initialize_state();
    dump_symtab();
    state.next_instruction = state.PC;
    state.PC = 0;
