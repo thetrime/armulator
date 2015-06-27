@@ -101,7 +101,8 @@ page_table_t* page_tables = NULL;
 #define UNKNOWN 0xdeadbeef
 
 #define ILLEGAL_OPCODE assert(0 && "Illegal opcode")
-#define NOT_DECODED(t) assert(0 && t " Not decoded")
+#define NOT_DECODED(t) not_decoded(t, __LINE__)
+void not_decoded(char* t, int line) {printf("Instruction %s is not decoded on line %d\n", t, line); assert(0);}
 #define UNPREDICTABLE assert(0 && "Unpredictable")
 #define UNDEFINED assert(0 && "Undefined")
 #define DECODED return 1
@@ -1173,7 +1174,14 @@ int decode_instruction(instruction_t* instruction)
                if (Rn != 13)
                   NOT_DECODED("LDM");
                else
-                  NOT_DECODED("POP");
+               {  // A1
+                  instruction->opcode = POP;
+                  instruction->POP.registers = word & 0xffff;
+                  instruction->POP.unaligned_allowed = 0;
+                  if ((instruction->POP.registers >> 13) & 1)
+                     UNPREDICTABLE;
+                  DECODED;
+               }
             }
             else if (op == 0b010000)
                NOT_DECODED("STMDB");
@@ -2405,8 +2413,12 @@ int decode_instruction(instruction_t* instruction)
             // Miscellaneous 16-bit
             opcode = (word >> 5) & 127;
             if ((opcode & 0b1111100) == 0)
-            {
-               NOT_DECODED("ADD_SPI");
+            {  // T2
+               instruction->opcode = ADD_SPI;
+               instruction->setflags = 0;
+               instruction->ADD_SPI.d = (word >> 8) & 7;
+               instruction->ADD_SPI.imm32 = (word & 0xff) << 2;
+               DECODED;
             }
             else if ((opcode & 0b1111100) == 0b0000100)
             {
@@ -2417,7 +2429,7 @@ int decode_instruction(instruction_t* instruction)
                DECODED;
             }
             else if ((opcode & 0b1111000) == 0b0001000)
-            {
+            {  // T1
                if (((word >> 11) & 1) == 1)
                {
                   instruction->opcode = CBNZ;
@@ -2454,8 +2466,21 @@ int decode_instruction(instruction_t* instruction)
                NOT_DECODED("UXTB");
             }
             else if ((opcode & 0b1111000) == 0b0011000)
-            {
-               NOT_DECODED("CBZ");
+            {  // T1 as well
+               if (((word >> 11) & 1) == 1)
+               {
+                  instruction->opcode = CBNZ;
+                  instruction->CBNZ.imm32 = (((word >> 3) & 31) << 1) | (((word >> 9) & 1) << 6);
+                  instruction->CBNZ.n = word & 7;
+                  DECODED;
+               }
+               else
+               {
+                  instruction->opcode = CBZ;
+                  instruction->CBZ.imm32 = (((word >> 3) & 31) << 1) | (((word >> 9) & 1) << 6);
+                  instruction->CBZ.n = word & 7;
+                  DECODED;
+               }
             }
             else if ((opcode & 0b1110000) == 0b0100000)
             {
@@ -2474,7 +2499,7 @@ int decode_instruction(instruction_t* instruction)
                NOT_DECODED("CPS");
             }
             else if ((opcode & 0b1111000) == 0b1001000)
-            {
+            {  // This too is T1!
                if (((word >> 11) & 1) == 1)
                {
                   instruction->opcode = CBNZ;
