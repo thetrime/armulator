@@ -995,7 +995,7 @@ int decode_instruction(instruction_t* instruction)
                   assert(0);
                }
             }               
-            assert(0 && "Illegal opcode");
+            ILLEGAL_OPCODE;
          }
          else if ((op1 == 0b010) || (op1 == 0b011 && op == 0))
          {
@@ -1143,7 +1143,7 @@ int decode_instruction(instruction_t* instruction)
             else if (((op1 & 0b11110) == 0b11110) && ((op2 & 0b011) == 0b010))
                NOT_DECODED("UBFX");
             else if (op1 == 0b11111 && op2 == 0b111)
-               assert(0 && "Permanently UNDEFINED");
+               UNDEFINED; // Permanently UNDEFINED
          }
          else if ((op1 & 0b110) ==  0b100)
          {
@@ -1235,7 +1235,7 @@ int decode_instruction(instruction_t* instruction)
             uint8_t Rn = (word >> 16) & 15;
             uint8_t op = (word >> 4) & 1;
             if ((op1 & 0b111110) == 0)
-               assert(0 && "Permanently UNDEFINED");
+               UNDEFINED; // Permanently UNDEFINED
             else if ((op1 & 0b110000) == 0b110000)
             {  // A1
                instruction->opcode = SVC;
@@ -1868,7 +1868,7 @@ int decode_instruction(instruction_t* instruction)
                }
                if (op1 == 0b010)
                {
-                  assert(0 && "Permanently UNDEFINED");
+                  UNDEFINED; // Permanently UNDEFINED
                }
                if ((op1 & 0b101) == 0b100)
                {
@@ -1898,7 +1898,7 @@ int decode_instruction(instruction_t* instruction)
                   DECODED;
                }
             }
-            assert(0 && "Illegal opcode");
+            ILLEGAL_OPCODE;
          }
          else if (op1 == 3)
          {
@@ -2047,12 +2047,11 @@ int decode_instruction(instruction_t* instruction)
                   }
                   DECODED;
                }               
-               assert(0 && "Illegal opcode");
+               ILLEGAL_OPCODE;
             }
             else if ((op2 & 0b1100111) == 0b0000111)
             {
-               // Explicitly Undefined
-               assert(0 && "Undefined");
+               UNDEFINED; // UDF
             }
             else if ((op2 & 0b1110001) == 0b0010000)
             {
@@ -2080,7 +2079,7 @@ int decode_instruction(instruction_t* instruction)
                assert(0);
             }
          }         
-         assert(0 && "Illegal opcode");
+         ILLEGAL_OPCODE;
       }
       else
       {
@@ -2394,7 +2393,7 @@ int decode_instruction(instruction_t* instruction)
                   DECODED;
                }                  
             }           
-            assert(0 && "Illegal opcode");
+            ILLEGAL_OPCODE;
          }
          else if ((opcode & 0b111110) == 0b101000)
          {
@@ -2605,6 +2604,7 @@ int decode_instruction(instruction_t* instruction)
          }
          else if ((opcode & 0b111100) == 0b110100)
          {
+            // Conditional branch and supervisor-call
             uint8_t opcode = (word >> 8) & 15;
             if ((opcode & 0b1110) != 0b1110)
             {
@@ -2621,8 +2621,7 @@ int decode_instruction(instruction_t* instruction)
             {
                NOT_DECODED("SVC");
             }
-            // Conditional branch and supervisor-call
-            assert(0);
+            ILLEGAL_OPCODE;
          }
          else if ((opcode & 0b111110) == 0b111000)
          {  // T2
