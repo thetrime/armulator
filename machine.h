@@ -1,7 +1,7 @@
 #include <stdint.h>
 void map_memory(unsigned char* data, uint32_t address, uint32_t length);
-void write_mem(uint8_t count, uint32_t addr, uint32_t value);
-uint32_t read_mem(uint8_t count, uint32_t addr);
+void write_mem(uint8_t count, uint32_t addr, uint64_t value);
+uint64_t read_mem(uint8_t count, uint32_t addr);
 uint32_t alloc_page();
 #define NUMARGS(...)  (sizeof((int[]){__VA_ARGS__})/sizeof(int))
 #define execute_function(...)  _execute_function(NUMARGS(__VA_ARGS__), __VA_ARGS__)
@@ -17,4 +17,8 @@ typedef struct
 } state_t;
 
 extern state_t state;
+
+#define PC r[15]
+#define SP r[13]
+#define LR r[14]
 

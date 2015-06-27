@@ -1,6 +1,6 @@
 # We must compile in 32-bit mode to avoid generating 64-bit addresses
 
-OBJECTS=machine.o loader.o stubs.o stub_glue.o map.o symtab.o hardware.o dyld_cache.o coprocessor.o cp15.o
+OBJECTS=machine.o loader.o stubs.o stub_glue.o map.o symtab.o hardware.o dyld_cache.o coprocessor.o cp15.o syscall.o
 
 
 armulator: $(OBJECTS)

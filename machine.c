@@ -12,6 +12,10 @@
 #include "hardware.h"
 #include "coprocessor.h"
 #include "symtab.h"
+#include "syscall.h"
+
+#define HaveLPAE() 0
+#define BigEndian() 0
 
 typedef enum
 {
@@ -55,10 +59,12 @@ typedef enum
    UBFX,
    MRC,
    STM,
-   STRD_I
+   STRD_I,
+   MVN_I,
+   SVC
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc"};
 
 typedef enum
 {
@@ -283,6 +289,11 @@ typedef struct
       } MOV_I;
       struct
       {
+         uint8_t c, d;
+         uint32_t imm32;
+      } MVN_I;
+      struct
+      {
          uint8_t d;
          uint16_t imm16;
       } MOVT;
@@ -355,11 +366,15 @@ typedef struct
          uint8_t n, wback;
          uint16_t registers;
       } STM;
+      struct
+      {
+         uint32_t imm32;
+      } SVC;
    };
 } instruction_t;
 
 
-uint32_t read_mem(uint8_t count, uint32_t addr)
+uint64_t read_mem(uint8_t count, uint32_t addr)
 {
    //printf("Reading from %08x\n", addr);
    unsigned char* physical = map_addr(addr);
@@ -369,11 +384,13 @@ uint32_t read_mem(uint8_t count, uint32_t addr)
       return physical[0];
    else if (count == 2)
       return physical[0] | physical[1] << 8;
+   else if (count == 8)
+      return physical[0] | physical[1] << 8 | physical[2] << 16 | physical[3] << 24 | (uint64_t)physical[4] << 32 | (uint64_t)physical[5] << 40 | (uint64_t)physical[6] << 48 | (uint64_t)physical[7] << 56;
    else
       assert(0 && "Bad read size");
 }
 
-void write_mem(uint8_t count, uint32_t addr, uint32_t value)
+void write_mem(uint8_t count, uint32_t addr, uint64_t value)
 {
    //printf("Writing 0x%08x to %08x\n", value, addr);
    unsigned char* physical = map_addr(addr);
@@ -394,6 +411,17 @@ void write_mem(uint8_t count, uint32_t addr, uint32_t value)
       //printf("Writing 0x%04x to %08x\n", value, addr);
       physical[0] = value & 0xff;
       physical[1] = (value >> 8) & 0xff;
+   }
+   else if (count == 8)
+   {
+      physical[0] = value & 0xff;
+      physical[1] = (value >> 8) & 0xff;
+      physical[2] = (value >> 16) & 0xff;
+      physical[3] = (value >> 24) & 0xff;
+      physical[4] = (value >> 32) & 0xff;
+      physical[5] = (value >> 40) & 0xff;
+      physical[6] = (value >> 48) & 0xff;
+      physical[7] = (value >> 56) & 0xff;
    }
    else
       assert(0 && "Bad write size");
@@ -932,8 +960,12 @@ int decode_instruction(instruction_t* instruction)
                      DECODED;
                   }
                   else if ((op & 0b11110) == 0b11110)
-                  {
-                     NOT_DECODED("MVN_I");
+                  {  // A1
+                     instruction->opcode = MVN_I;
+                     instruction->MVN_I.d = (word >> 12) & 15;
+                     instruction->setflags = (word >> 20) & 1;
+                     instruction->MVN_I.imm32 = ARMExpandImm_C(word & 0xfff, state.c, &instruction->MVN_I.c);
+                     DECODED;
                   }                                    
                   ILLEGAL_OPCODE;
                }
@@ -1117,7 +1149,62 @@ int decode_instruction(instruction_t* instruction)
             // B, BL, block data transfer
             op = (word >> 20) & 0x3f;
             uint8_t Rn = (word >> 16) & 15;
-            if ((op & 0b110000) == 0b100000)
+            uint8_t R = (word >> 15) & 1;
+            if ((op & 0b111101) == 0)
+               NOT_DECODED("STMDA");
+            else if ((op & 0b111101) == 1)
+               NOT_DECODED("LDMDA");
+            else if ((op & 0b111101) == 0b001000)
+               NOT_DECODED("STM");
+            else if (op == 0b001001)
+            {  // A1
+               instruction->opcode = LDM;
+               instruction->LDM.n = (word >> 16) & 15;
+               instruction->LDM.registers = word & 0xffff;
+               instruction->LDM.wback = (word >> 21) & 1;
+               if (instruction->LDM.n == 15 || BitCount(instruction->LDM.registers) < 1)
+                  UNPREDICTABLE;
+               if (instruction->LDM.wback && ((instruction->LDM.registers >> instruction->LDM.n) & 1) == 1)
+                  UNPREDICTABLE;
+               DECODED;
+            }
+            else if (op == 0b001011)
+            {
+               if (Rn != 13)
+                  NOT_DECODED("LDM");
+               else
+                  NOT_DECODED("POP");
+            }
+            else if (op == 0b010000)
+               NOT_DECODED("STMDB");
+            else if (op == 0b010010)
+            {
+               if (Rn != 13)
+                  NOT_DECODED("STMDB");
+               else
+               {  // A1
+                  instruction->opcode = PUSH;
+                  instruction->PUSH.registers = word & 0xffff;
+                  instruction->PUSH.unaligned_allowed = 0;
+                  DECODED;                  
+               }
+            }
+            else if ((op & 0b111101) == 0b010001)
+               NOT_DECODED("LDMDB");
+            else if ((op & 0b111101) == 0b011000)
+               NOT_DECODED("STMIB");
+            else if ((op & 0b111101) == 0b011001)
+               NOT_DECODED("LDMIB");
+            else if ((op & 0b100101) == 0b000100)
+               NOT_DECODED("STM");
+            else if ((op & 0b100101) == 0b000101)
+            {
+               if (R == 0)
+                  NOT_DECODED("LDM"); // User registers
+               else
+                  NOT_DECODED("LDM"); // Exception return
+            }
+            else if ((op & 0b110000) == 0b100000)
             {
                instruction->opcode = B;
                instruction->B.imm32 = SignExtend(24, (word & 0xffffff) << 2, 32);
@@ -1129,22 +1216,8 @@ int decode_instruction(instruction_t* instruction)
                instruction->BL.t = 0;
                instruction->B.imm32 = SignExtend(24, (word & 0xffffff) << 2, 32);
                DECODED;
-            }
-            if (op == 0b010010)
-            {
-               if (Rn != 0b1101)
-               {
-                  NOT_DECODED("STMDB");
-               }
-               else
-               {  // A1
-                  instruction->opcode = PUSH;
-                  instruction->PUSH.registers = word & 0xffff;
-                  instruction->PUSH.unaligned_allowed = 0;
-                  DECODED;                  
-               }
-            }
-            assert(0 && "Decoding not finished");
+            }            
+            ILLEGAL_OPCODE;
          }
          else if ((op1 & 0b110) == (0b110))
          {
@@ -1156,7 +1229,11 @@ int decode_instruction(instruction_t* instruction)
             if ((op1 & 0b111110) == 0)
                assert(0 && "Permanently UNDEFINED");
             else if ((op1 & 0b110000) == 0b110000)
-               NOT_DECODED("SVC");
+            {  // A1
+               instruction->opcode = SVC;
+               instruction->SVC.imm32 = word & 0xfff;
+               DECODED;
+            }
             else if ((coproc & 0b1110) != 0b1010)
             {
                if ((op1 & 0b100001) == 0 && !((op1 & 0b111011) == 0))
@@ -1406,7 +1483,74 @@ int decode_instruction(instruction_t* instruction)
             else if ((op2 & 0b1000000) == 0b1000000)
             {
                // Coprocessor, SIMD, FP
-               assert(0);
+               uint8_t coproc = (word2 >> 8) & 15;
+               uint8_t op1 = (word >> 4)  & 63;
+               uint8_t op = (word2 >> 4) & 1;
+               uint8_t Rn = word & 15;
+               if ((op1 & 0b111110) == 0)
+                  UNDEFINED;
+               else if ((op1 & 0b110000) == 0b110000)
+               {
+                  // Advanced SIMD
+                  assert(0);
+               }
+               else if ((coproc & 0b1110) != 0b1010)
+               {
+                  if ((op1 & 0b100001) == 0 && ((op1 & 0b111010) != 0))
+                     NOT_DECODED("STC");
+                  else if ((op1 & 0b100001) == 1 && ((op1 & 0b111010) != 0))
+                  {
+                     if (Rn != 15)
+                        NOT_DECODED("LDC_I");
+                     else
+                        NOT_DECODED("LDC_L");
+                  }
+                  else if (op1 == 0b000100)
+                     NOT_DECODED("MCRR");
+                  else if (op1 == 0b0000101)
+                     NOT_DECODED("MRRC");
+                  else if (((op1 & 0b110000) == 0b100000) && op == 0)
+                     NOT_DECODED("CDP");
+                  else if (((op1 & 0b110001) == 0b100000) && op == 1)
+                     NOT_DECODED("MCR");
+                  else if (((op1 & 0b110001) == 0b100001) && op == 1)
+                  {  // T1
+                     instruction->opcode = MRC;
+                     instruction->MRC.t = (word2 >> 12) & 15;
+                     instruction->MRC.cp = (word2 >> 8) & 15;
+                     instruction->MRC.opc1 = (word >> 5) & 7;
+                     instruction->MRC.opc2 = (word2 >> 5) & 7;
+                     instruction->MRC.cm = word2 & 15;
+                     instruction->MRC.cn = word & 15;
+                     if (instruction->MRC.t && state.t != 0)
+                        UNPREDICTABLE;
+                     DECODED;
+                  }
+               }
+               else
+               {
+                  if ((op1 & 0b100000) == 0 && ((op1 & 0b111010) != 0))
+                  {
+                     // Extension register load/store
+                     assert(0);
+                  }
+                  else if ((op1 & 0b11110) == 0b000100)
+                  {
+                     // 64-bit transfers between ARM core and extension registers
+                     assert(0);
+                  }
+                  else if (((op1 & 0b110000) == 0b10000) && op == 0)
+                  {
+                     // Floating point data processing instructions
+                     assert(0);
+                  }
+                  else if (((op1 & 0b110000) == 0b100000) && op == 1)
+                  {
+                     // 8, 16, and 32-bit transfer between ARM core and extension registers
+                     assert(0);
+                  }
+               }
+               ILLEGAL_OPCODE;
             }
          }         
          else if (op1 == 2)
@@ -1441,8 +1585,15 @@ int decode_instruction(instruction_t* instruction)
                   DECODED;
                }
                else if (op == 1)
-               {
-                  NOT_DECODED("BIC_I");
+               {  // T1
+                  instruction->opcode = BIC_I;
+                  instruction->BIC_I.d = (word2 >> 8) & 15;
+                  instruction->BIC_I.n = word & 15;
+                  instruction->setflags = (word >> 4) & 1;
+                  instruction->BIC_I.imm32 = ThumbExpandImm_C(((word << 16) | word2), state.c, &instruction->BIC_I.c);
+                  if (instruction->BIC_I.d == 13 || instruction->BIC_I.d == 15 || instruction->BIC_I.n == 13 || instruction->BIC_I.n == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op == 2 && Rn != 15)
                {  // T1
@@ -2589,6 +2740,37 @@ void step_machine(int steps)
                state.r[instruction.STR_I.n] = offset_addr;
             break;
          }
+         case STRD_I:
+         {
+            uint32_t offset_addr = state.r[instruction.STRD_I.n] + (instruction.STRD_I.add?(instruction.STRD_I.imm32):(-instruction.STRD_I.imm32));
+            uint32_t address = instruction.STRD_I.index?(offset_addr):state.r[instruction.STRD_I.n];
+            if (instruction.STRD_I.index && !instruction.STRD_I.wback)
+            {
+               if (instruction.STRD_I.imm32 == 0)
+                  printf(" %s, %s, [%s]\n", reg_name[instruction.STRD_I.t], reg_name[instruction.STRD_I.t2], reg_name[instruction.STRD_I.n]);
+               else
+                  printf(" %s, %s [%s %s {%d}]\n", reg_name[instruction.STRD_I.t], reg_name[instruction.STRD_I.t2], reg_name[instruction.STRD_I.n], instruction.STRD_I.add?"+":"-", instruction.STRD_I.imm32);
+            }
+            else if (instruction.STRD_I.index && instruction.STRD_I.wback) printf(" %s, %s, [%s %s %d]\n", reg_name[instruction.STRD_I.t], reg_name[instruction.STRD_I.t2], reg_name[instruction.STRD_I.n], instruction.STRD_I.add?"+":"-", instruction.STRD_I.imm32);
+            else if (!instruction.STRD_I.index && instruction.STRD_I.wback) printf(" %s, %s, [%s] %s %d\n", reg_name[instruction.STRD_I.t], reg_name[instruction.STRD_I.t2], reg_name[instruction.STRD_I.n], instruction.STRD_I.add?"+":"-", instruction.STRD_I.imm32);
+            if (HaveLPAE() && ((address & 7) == 0))
+            {
+               uint64_t data;
+               if (BigEndian())
+                  data = (uint64_t)state.r[instruction.STRD_I.t] << 32 | state.r[instruction.STRD_I.t2];
+               else
+                  data = (uint64_t)state.r[instruction.STRD_I.t2] << 32 | state.r[instruction.STRD_I.t];
+               write_mem(8, address, data);
+            }
+            else
+            {
+               write_mem(4, address, state.r[instruction.STRD_I.t]);
+               write_mem(4, address+4, state.r[instruction.STRD_I.t]);
+            }
+            if (instruction.STRD_I.wback)
+               state.r[instruction.STRD_I.n] = offset_addr;
+            break;
+         }
          case STRB_I:
          {
             uint32_t offset_addr = state.r[instruction.STRB_I.n] + (instruction.STRB_I.add?(instruction.STRB_I.imm32):(-instruction.STRB_I.imm32));
@@ -2964,7 +3146,7 @@ void step_machine(int steps)
             }
             if ((instruction.POP.registers >> 15) & 1)
             {
-               printf("R15 ");
+               printf("pc ");
                if (c) LOAD_PC(read_mem(4, address));
             }
             printf("}\n");
@@ -3018,6 +3200,27 @@ void step_machine(int steps)
                state.n = (result >> 31) & 1;
                state.z = (result == 0);
                state.c = instruction.MOV_I.d;
+            }
+            break;
+         }
+         case MVN_I:
+         {
+            printf(" %s, #0x%x\n", reg_name[instruction.MVN_I.d], instruction.MVN_I.imm32);
+            CHECK_CONDITION;
+            uint32_t result = ~instruction.MVN_I.imm32;
+            if (instruction.MVN_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.MVN_I.d] = result;
+               if (instruction.setflags)
+               {
+                  state.n = (result >> 31) & 1;
+                  state.z = (result == 0);
+                  state.c = instruction.MVN_I.c;
+               }
             }
             break;
          }
@@ -3153,6 +3356,7 @@ void step_machine(int steps)
                {
                   printf("%s ", reg_name[i]);
                   if (c) state.r[i] = read_mem(4, address);
+                  printf(" <- %08x ",address);
                   address += 4;
                }
             }
@@ -3235,6 +3439,14 @@ void step_machine(int steps)
                   state.r[instruction.STM.n] += 4*BitCount(instruction.STM.registers);
             }
             printf("}\n");
+            break;
+         }
+         case SVC:
+         {
+            printf(" #0x%x\n", instruction.SVC.imm32);
+            CHECK_CONDITION;
+            if (instruction.SVC.imm32 == 0x80)
+               syscall(state.r[12]);
             break;
          }
          default:
