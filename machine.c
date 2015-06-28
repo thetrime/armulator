@@ -63,10 +63,12 @@ typedef enum
    MVN_I,
    SVC,
    BL_R,
-   BLX_R
+   BLX_R,
+   UMULL,
+   LSR_I
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx", "umull", "lsr"};
 
 typedef enum
 {
@@ -104,7 +106,7 @@ page_table_t* page_tables = NULL;
 
 #define ILLEGAL_OPCODE assert(0 && "Illegal opcode")
 #define NOT_DECODED(t) not_decoded(t, __LINE__)
-void not_decoded(char* t, int line) {printf("Instruction %s is not decoded on line %d\n", t, line); assert(0);}
+void not_decoded(char* t, int line) {printf("Instruction %s is not decoded on line %d\n", t, line); exit(-1);}
 #define UNPREDICTABLE assert(0 && "Unpredictable")
 #define UNDEFINED assert(0 && "Undefined")
 #define DECODED return 1
@@ -381,6 +383,15 @@ typedef struct
       {
          uint32_t imm32;
       } SVC;
+      struct
+      {
+         uint8_t dlo, dhi, n, m;
+      } UMULL;
+      struct
+      {
+         uint8_t d, m;
+         int32_t shift_n;
+      } LSR_I;
    };
 } instruction_t;
 
@@ -566,7 +577,7 @@ void initialize_state()
 
 int decode_instruction(instruction_t* instruction)
 {
-   //printf("instruction at = %08x, SP = %08x, value at 0xcfffffe8 is %08x\n", state.next_instruction, state.SP, (uint32_t)read_mem(4, 0xcfffffe8));
+   printf("instruction at = %08x, SP = %08x, thumb=%d\n", state.next_instruction, state.SP, state.t);
    instruction->source_address = state.next_instruction;
    if (state.t == 0) // ARM mode
    {
@@ -1280,7 +1291,7 @@ int decode_instruction(instruction_t* instruction)
                   instruction->MRC.opc2 = (word >> 5) & 7;
                   instruction->MRC.cm = word & 15;
                   instruction->MRC.cn = (word >> 16) & 15;
-                  if (instruction->MRC.t && state.t != 0)
+                  if (instruction->MRC.t == 13 && state.t != 0)
                      UNPREDICTABLE;
                   DECODED;
                }
@@ -1540,7 +1551,7 @@ int decode_instruction(instruction_t* instruction)
                      instruction->MRC.opc2 = (word2 >> 5) & 7;
                      instruction->MRC.cm = word2 & 15;
                      instruction->MRC.cn = word & 15;
-                     if (instruction->MRC.t && state.t != 0)
+                     if (instruction->MRC.t == 13 && state.t != 0)
                         UNPREDICTABLE;
                      DECODED;
                   }
@@ -2087,7 +2098,45 @@ int decode_instruction(instruction_t* instruction)
             else if ((op2 & 0b1111000) == 0b0111000)
             {
                // Long multiply, long multiply accumulate and divide
-               assert(0);
+               uint8_t op1 = (word >> 4) & 7;
+               uint8_t op2 = (word2 >> 4) & 7;
+               if (op1 == 0 && op2 == 0)
+                  NOT_DECODED("SMULL");
+               else if (op1 == 1 && op2 == 15)
+                  NOT_DECODED("SDIV");
+               else if (op1 == 2 && op2 == 0)
+               {  // T1
+                  instruction->opcode = UMULL;
+                  instruction->UMULL.dlo = (word2 >> 12) & 7;
+                  instruction->UMULL.dhi = (word2 >> 8) & 7;
+                  instruction->UMULL.n = word & 15;
+                  instruction->UMULL.m = word2 & 15;
+                  instruction->setflags = 0;
+                  if (instruction->UMULL.dlo == 13 || instruction->UMULL.dlo == 15 ||
+                      instruction->UMULL.dhi == 13 || instruction->UMULL.dhi == 15 ||
+                      instruction->UMULL.n == 13 || instruction->UMULL.n == 15 ||
+                      instruction->UMULL.m == 13 || instruction->UMULL.m == 15)
+                     UNPREDICTABLE;
+                  if (instruction->UMULL.dlo == instruction->UMULL.dhi)
+                     UNPREDICTABLE;
+                  DECODED;
+               }
+               
+               else if (op1 == 3 && op2 == 15)
+                  NOT_DECODED("UDIV");
+               else if (op1 == 4 && op2 == 0)
+                  NOT_DECODED("SMLAL");
+               else if (op1 == 4 && ((op2 & 0b1100) == 0b1000))
+                  NOT_DECODED("SMLALBx");
+               else if (op1 == 4 && ((op2 & 0b1110) == 0b1100))
+                  NOT_DECODED("SMLALD");
+               else if (op1 == 5 && ((op2 & 0b1110) == 0b11100))
+                  NOT_DECODED("SMLSLD");
+               else if (op1 == 6 && op2 == 0)
+                  NOT_DECODED("UMLAL");
+               else if (op1 == 6 && op2 == 6)
+                  NOT_DECODED("UMAAL");
+               ILLEGAL_OPCODE;
             }
             else if ((op2 & 0b1000000) == 0b1000000)
             {
@@ -2112,8 +2161,14 @@ int decode_instruction(instruction_t* instruction)
                NOT_DECODED("LSL_I");
             }
             else if ((opcode & 0b11100) == 0b00100)
-            {
-               NOT_DECODED("LSR_I");
+            {  // T1
+               shift_type_t ignored;
+               instruction->opcode = LSR_I;
+               instruction->LSR_I.d = word & 7;
+               instruction->LSR_I.m= (word >> 3) & 7;
+               instruction->setflags = !IN_IT_BLOCK;
+               DecodeImmShift(1, (word >> 6) & 31, &ignored, &instruction->LSR_I.shift_n);
+               DECODED;
             }
             else if ((opcode & 0b11100) == 0b01000)
             {
@@ -3527,10 +3582,50 @@ void step_machine(int steps)
          {
             printf(" #0x%x\n", instruction.SVC.imm32);
             CHECK_CONDITION;
+            // FIXME: Need to save CSPR to SSPR. This requires us to actually have a CSPR!
             if (instruction.SVC.imm32 == 0x80)
             {
-               // CHECKME: Erm, does SVC set r0? I dont think it can, since wont the SWI swap the context and destroy any registers?
+               // CHECKME: Erm, does SVC set r0? I think it must. It MAY also set other things... hmm.
                state.r[0] = syscall(state.r[12]);
+            }
+            break;
+         }
+         case UMULL:
+         {
+            printf(" %s, %s, %s, %s\n", reg_name[instruction.UMULL.dlo], reg_name[instruction.UMULL.dhi], reg_name[instruction.UMULL.n], reg_name[instruction.UMULL.m]);
+            CHECK_CONDITION;
+            // CHECKME: Is this right? Do we lose anything by just casting the operands to uint64_t? Does failing to do so guarantee truncation of the result?
+            uint64_t result = (uint64_t)(state.r[instruction.UMULL.n]) * (uint64_t)(state.r[instruction.UMULL.m]);
+            state.r[instruction.UMULL.dhi] = (result >> 32) & 0xffffffff;
+            state.r[instruction.UMULL.dlo] = result & 0xffffffff;
+            if (instruction.setflags)
+            {
+               state.n = (result >> 63) & 1;
+               state.z = (result == 0);
+               // C and V unchanged
+            }
+            break;
+         }
+         case LSR_I:
+         {
+            printf(" %s, %s, #0x%x\n", reg_name[instruction.LSR_I.d], reg_name[instruction.LSR_I.m], instruction.LSR_I.shift_n);
+            CHECK_CONDITION;
+            uint32_t result;
+            uint8_t carry_out;            
+            Shift_C(32, state.r[instruction.LSR_I.m], LSR, instruction.LSR_I.shift_n, state.c, &result, &carry_out);
+            if (instruction.LSR_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.LSR_I.d] = result;
+               if (instruction.setflags)
+               {
+                  state.n = (result >> 31) & 1;
+                  state.z = result == 0;
+                  state.c = carry_out;
+               }
             }
             break;
          }

@@ -18,6 +18,7 @@
 
 #define abort(...) {printf(__VA_ARGS__); assert(0);}
 
+/* Mach .......... */
 uint32_t mach_task_self()
 {
    printf(" .... Hello from mach_task_self()!\n");
@@ -32,15 +33,37 @@ uint32_t mach_reply_port()
 
 uint32_t mach_msg_trap()
 {
-   printf(" .... Hello from mach_message_trap(%08x,%08x,%08x,%08x,%08x=%08x,%08x=%08x,%08x=%08x)!\n", A0, A1, A2, A3, A4, state.r[5], A5, state.r[6], A6, state.r[8]);
+   printf(" .... Hello from mach_message_trap(%08x,%08x,%08x,%08x,%08x,%08x,%08x)!\n", A0, A1, A2, A3, A4, A5, A6);
    return 0;
+}
+
+/* Posix ............... */
+
+uint32_t posix_sigprocmask()
+{
+   printf(" .... Hello from sigprocmask(%08x, %08x, %08x)\n", A0, A1, A2);
+   return 0;
+}
+
+uint32_t posix_getpid()
+{
+   printf(" .... Hello from getpid()\n");
+   return 0xdeadbeef;
+}
+
+uint32_t posix_kill()
+{
+   printf(" .... Hello from kill(%08x, %08x)\n", A0, A1);
+   return 0;   
 }
 
 
 uint32_t (*mach_call[256])(void) = {[0x1a] = mach_reply_port,
                                     [0x1c] = mach_task_self,
                                     [0x1f] = mach_msg_trap};
-uint32_t (*posix_call[256])(void) = {};
+uint32_t (*posix_call[256])(void) = {[0x14] = posix_getpid,
+                                     [0x25] = posix_kill,
+                                     [0x30] = posix_sigprocmask};
    
 uint32_t syscall(int32_t number)
 {
