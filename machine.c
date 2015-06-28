@@ -66,10 +66,12 @@ typedef enum
    BLX_R,
    UMULL,
    LSR_I,
-   MLS
+   MLS,
+   MUL,
+   ASR_I
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx", "umull", "lsr", "mls"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx", "umull", "lsr", "mls", "mul", "asr"};
 
 typedef enum
 {
@@ -395,8 +397,17 @@ typedef struct
       } LSR_I;
       struct
       {
+         uint8_t d, m;
+         int32_t shift_n;
+      } ASR_I;
+      struct
+      {
          uint8_t d, n, m, a;
       } MLS;
+      struct
+      {
+         uint8_t d, n, m;
+      } MUL;
    };
 } instruction_t;
 
@@ -966,8 +977,13 @@ int decode_instruction(instruction_t* instruction)
                      NOT_DECODED("CMN_I");
                   }
                   else if ((op & 0b11110) == 0b11000)
-                  {
-                     NOT_DECODED("ORR_I");
+                  {  // A1
+                     instruction->opcode = ORR_I;
+                     instruction->ORR_I.d = (word >> 12) & 15;
+                     instruction->ORR_I.n = (word >> 16) & 15;
+                     instruction->setflags = (word >> 2) & 1;
+                     instruction->ORR_I.imm32 = ARMExpandImm_C(word & 0xfff, state.c, &instruction->ORR_I.c);
+                     DECODED;
                   }
                   else if ((op & 0b11110) == 0b11010)
                   {  // A1
@@ -1512,7 +1528,82 @@ int decode_instruction(instruction_t* instruction)
             else if ((op2 & 0b1100000) == 0b0100000)
             {
                // Data processing shifted register
-               assert(0);
+               uint8_t op = (word >> 5) & 15;
+               uint8_t Rn = word & 15;
+               uint8_t RdS = ((word2 >> 7) & 0b11110) | ((word >> 4) & 1);
+               if (op == 0)
+               {
+                  if (RdS == 31)
+                     NOT_DECODED("AND_R");
+                  else
+                     NOT_DECODED("TST_R");                  
+               }
+               if (op == 1)
+                  NOT_DECODED("BIC_R");
+               else if (op == 2)
+               {
+                  if (Rn != 15)
+                     NOT_DECODED("ORR_R");
+                  else
+                  {
+                     // Move register and immediate shifts
+                     uint8_t type = (word2 >> 4) & 3;
+                     uint8_t imm = ((word2 >> 6) & 3) | ((word2 >> 10) & 0b11100);
+                     if (type == 0)
+                     {
+                        if (imm == 0)
+                           NOT_DECODED("MOV_R");
+                        else
+                           NOT_DECODED("LSL_I");
+                     }
+                     else if (type == 1)
+                        NOT_DECODED("LSR_I");
+                     else if (type == 2)
+                     {  // T2
+                        shift_type_t ignored;
+                        instruction->opcode = ASR_I;
+                        instruction->ASR_I.d = (word2 >> 8) & 15;
+                        instruction->ASR_I.m = word2 & 15;
+                        instruction->setflags = (word >> 4) & 1;
+                        DecodeImmShift(1, (word >> 6) & 31, &ignored, &instruction->ASR_I.shift_n);
+                        if (instruction->ASR_I.d == 13 || instruction->ASR_I.d == 15 || instruction->ASR_I.m == 13 || instruction->ASR_I.m == 15)
+                           UNPREDICTABLE;
+                        DECODED;
+                     }
+                     else if (type == 3)
+                     {
+                        if (imm == 0)
+                           NOT_DECODED("RRX");
+                        else
+                           NOT_DECODED("ROR_I");
+                     }
+                     ILLEGAL_OPCODE;
+                  }
+               }
+               else if (op == 3)
+               {
+                  if (Rn != 15)
+                     NOT_DECODED("ORN_R");
+                  else
+                     NOT_DECODED("MVN_R");                     
+               }
+               else if (op == 4)
+               {
+                  if (RdS != 15)
+                     NOT_DECODED("EOR_R");
+                  else
+                     NOT_DECODED("TEQ_R");
+               }
+               else if (op == 6)
+                  NOT_DECODED("PKH");
+               else if (op == 8)
+               {
+                  if (RdS != 15)
+                     NOT_DECODED("ADD_R");
+                  else
+                     NOT_DECODED("CMN_R");
+               }
+               ILLEGAL_OPCODE;
             }
             else if ((op2 & 0b1000000) == 0b1000000)
             {
@@ -2108,7 +2199,18 @@ int decode_instruction(instruction_t* instruction)
                      if (Ra != 15)
                         NOT_DECODED("MLA");
                      else
-                        NOT_DECODED("MUL");
+                     {  // T2
+                        instruction->opcode = MUL;
+                        instruction->MUL.d = (word2 >> 8) & 15;
+                        instruction->MUL.n = word & 15;
+                        instruction->MUL.m = word2 & 15;
+                        instruction->setflags = 0;
+                        if (instruction->MUL.d == 13 || instruction->MUL.d == 15 ||
+                            instruction->MUL.n == 13 || instruction->MUL.n == 15 ||
+                            instruction->MUL.m == 13 || instruction->MUL.m == 15)
+                           UNPREDICTABLE;
+                        DECODED;
+                     }
                   }
                   else
                   {  // T1
@@ -2331,7 +2433,15 @@ int decode_instruction(instruction_t* instruction)
                }
                case 11: NOT_DECODED("CMN_R");
                case 12: NOT_DECODED("ORR_R");
-               case 13: NOT_DECODED("MUL_R");
+               case 13:
+               {  // T1
+                  instruction->opcode = MUL;
+                  instruction->MUL.d = word & 7;
+                  instruction->MUL.n = (word >> 3) & 7;
+                  instruction->MUL.m = instruction->MUL.d;
+                  instruction->setflags = !IN_IT_BLOCK;
+                  DECODED;                  
+               }
                case 14: NOT_DECODED("BIC_R");
                case 15: NOT_DECODED("MVN_R");
 
@@ -3705,6 +3815,29 @@ void step_machine(int steps)
             }
             break;
          }
+         case ASR_I:
+         {
+            printf(" %s, %s, #0x%x\n", reg_name[instruction.ASR_I.d], reg_name[instruction.ASR_I.m], instruction.ASR_I.shift_n);
+            CHECK_CONDITION;
+            uint32_t result;
+            uint8_t carry_out;            
+            Shift_C(32, state.r[instruction.ASR_I.m], ASR, instruction.ASR_I.shift_n, state.c, &result, &carry_out);
+            if (instruction.ASR_I.d == 15)
+            {
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.ASR_I.d] = result;
+               if (instruction.setflags)
+               {
+                  state.n = (result >> 31) & 1;
+                  state.z = result == 0;
+                  state.c = carry_out;
+               }
+            }
+            break;
+         }
          case MLS:
          {
             printf(" %s, %s, %s, %s\n", reg_name[instruction.MLS.d], reg_name[instruction.MLS.n], reg_name[instruction.MLS.m], reg_name[instruction.MLS.a]);
@@ -3714,6 +3847,21 @@ void step_machine(int steps)
             int32_t addend   = (int32_t)state.r[instruction.MLS.a];
             int64_t result = addend - operand1 * operand2;
             state.r[instruction.MLS.d] = result & 0xffffffff;
+            break;
+         }
+         case MUL:
+         {
+            printf(" %s, %s, %s\n", reg_name[instruction.MUL.d], reg_name[instruction.MUL.n], reg_name[instruction.MUL.m]);
+            CHECK_CONDITION;
+            int32_t operand1 = (int32_t)state.r[instruction.MUL.n];
+            int32_t operand2 = (int32_t)state.r[instruction.MUL.m];
+            int64_t result = operand1 * operand2;
+            state.r[instruction.MUL.d] = result & 0xffffffff;
+            if (instruction.setflags)
+            {
+               state.n = (result >> 31) & 1;
+               state.z = (result & 0xffffffff) == 0;
+            }
             break;
          }
          default:
