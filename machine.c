@@ -65,10 +65,11 @@ typedef enum
    BL_R,
    BLX_R,
    UMULL,
-   LSR_I
+   LSR_I,
+   MLS
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx", "umull", "lsr"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx", "umull", "lsr", "mls"};
 
 typedef enum
 {
@@ -392,6 +393,10 @@ typedef struct
          uint8_t d, m;
          int32_t shift_n;
       } LSR_I;
+      struct
+      {
+         uint8_t d, n, m, a;
+      } MLS;
    };
 } instruction_t;
 
@@ -2093,7 +2098,78 @@ int decode_instruction(instruction_t* instruction)
             else if ((op2 & 0b1111000) == 0b0110000)
             {
                // Multiply, Multiply accumulate, and ABS
-               assert(0);
+               uint8_t op1 = (word >> 4) & 7;
+               uint8_t op2 = (word2 >> 4) & 3;
+               uint8_t Ra = (word2 >> 12) & 15;
+               if (op1 == 0)
+               {
+                  if (op2 == 0)
+                  {
+                     if (Ra != 15)
+                        NOT_DECODED("MLA");
+                     else
+                        NOT_DECODED("MUL");
+                  }
+                  else
+                  {  // T1
+                     instruction->opcode = MLS;
+                     instruction->MLS.d = (word2 >> 8) & 15;
+                     instruction->MLS.n = word & 15;
+                     instruction->MLS.m = word2 & 15;
+                     instruction->MLS.a = (word2 >> 12) & 15;
+                     if (instruction->MLS.d == 13 || instruction->MLS.d == 15 ||
+                         instruction->MLS.n == 13 || instruction->MLS.n == 15 ||
+                         instruction->MLS.m == 13 || instruction->MLS.m == 15 ||
+                         instruction->MLS.a == 13 || instruction->MLS.a == 15)
+                     UNPREDICTABLE;
+                     DECODED;
+                  }
+               }
+               else if (op == 1)
+               {
+                  if (Ra != 15)
+                     NOT_DECODED("SMLABB");
+                  else
+                     NOT_DECODED("SMULBB");
+               }
+               else if (op1 == 2 && ((op2 & 0b10) == 0b10))
+               {
+                  if (Ra != 15)
+                     NOT_DECODED("SMLAD");
+                  else
+                     NOT_DECODED("SMUAD");
+               }
+               else if (op1 == 3 && ((op2 & 0b10) == 0b10))
+               {
+                  if (Ra != 15)
+                     NOT_DECODED("SMLAWB");
+                  else
+                     NOT_DECODED("SMULWB");
+               }
+               else if (op1 == 4 && ((op2 & 0b10) == 0b10))
+               {
+                  if (Ra != 15)
+                     NOT_DECODED("SMLSD");
+                  else
+                     NOT_DECODED("SMLUSD");
+               }
+               else if (op1 == 5 && ((op2 & 0b10) == 0b10))
+               {
+                  if (Ra != 15)
+                     NOT_DECODED("SMMLA");
+                  else
+                     NOT_DECODED("SMMUL");
+               }
+               else if (op1 == 6 && ((op2 & 0b10) == 0b10))
+                  NOT_DECODED("SMMLS");
+               else if (op1 == 7 && op2 == 0)
+               {
+                  if (Ra != 15)
+                     NOT_DECODED("USADA8");
+                  else
+                     NOT_DECODED("USAD8");
+               }                  
+               ILLEGAL_OPCODE;
             }
             else if ((op2 & 0b1111000) == 0b0111000)
             {
@@ -3627,6 +3703,17 @@ void step_machine(int steps)
                   state.c = carry_out;
                }
             }
+            break;
+         }
+         case MLS:
+         {
+            printf(" %s, %s, %s, %s\n", reg_name[instruction.MLS.d], reg_name[instruction.MLS.n], reg_name[instruction.MLS.m], reg_name[instruction.MLS.a]);
+            CHECK_CONDITION;
+            int32_t operand1 = (int32_t)state.r[instruction.MLS.n];
+            int32_t operand2 = (int32_t)state.r[instruction.MLS.m];
+            int32_t addend   = (int32_t)state.r[instruction.MLS.a];
+            int64_t result = addend - operand1 * operand2;
+            state.r[instruction.MLS.d] = result & 0xffffffff;
             break;
          }
          default:
