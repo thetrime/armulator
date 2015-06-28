@@ -556,7 +556,7 @@ void initialize_state()
 
 int decode_instruction(instruction_t* instruction)
 {
-   //printf("instruction at = %08x, SP = %08x, r2 = %08x)\n", state.next_instruction, state.SP, state.r[2]);
+   //printf("instruction at = %08x, SP = %08x, value at 0xcfffffe8 is %08x\n", state.next_instruction, state.SP, (uint32_t)read_mem(4, 0xcfffffe8));
    instruction->source_address = state.next_instruction;
    if (state.t == 0) // ARM mode
    {
@@ -2400,7 +2400,7 @@ int decode_instruction(instruction_t* instruction)
             NOT_DECODED("ADR");
          }
          else if ((opcode & 0b111110) == 0b101010)
-         {
+         {  // T1
             instruction->opcode = ADD_SPI;
             instruction->ADD_SPI.d = (word >> 8) & 7;
             instruction->setflags = 0;
@@ -2414,13 +2414,13 @@ int decode_instruction(instruction_t* instruction)
             if ((opcode & 0b1111100) == 0)
             {  // T2
                instruction->opcode = ADD_SPI;
+               instruction->ADD_SPI.d = 13;
                instruction->setflags = 0;
-               instruction->ADD_SPI.d = (word >> 8) & 7;
                instruction->ADD_SPI.imm32 = (word & 0xff) << 2;
                DECODED;
             }
             else if ((opcode & 0b1111100) == 0b0000100)
-            {
+            {  // T1
                instruction->opcode = SUB_SPI;
                instruction->SUB_SPI.d = 13;
                instruction->setflags = 0;
@@ -3141,11 +3141,11 @@ void step_machine(int steps)
                   printf("%s ", reg_name[i]);
                   if (i == 13 && i != LowestSetBit(instruction.PUSH.registers))
                   {
-                     if (c) write_mem(4, address, UNKNOWN);
+                     if (c) {write_mem(4, address, UNKNOWN); printf(" (to %08x) ", address);}
                   }
                   else
                   {
-                     if (c) write_mem(4, address, state.r[i]); 
+                     if (c) {write_mem(4, address, state.r[i]); printf(" (to %08x) ", address);}
                   }
                   address += 4;
                }
@@ -3164,14 +3164,14 @@ void step_machine(int steps)
                if (instruction.POP.registers & (1 << i))
                {
                   printf("%s ", reg_name[i]);
-                  if (c) state.r[i] = read_mem(4, address);
+                  if (c) {state.r[i] = read_mem(4, address); printf(" (from %08x) ", address);}
                   address += 4;
                }
             }
             if ((instruction.POP.registers >> 15) & 1)
             {
                printf("pc ");
-               if (c) LOAD_PC(read_mem(4, address));
+               if (c) {LOAD_PC(read_mem(4, address)); printf(" (from %08x) ", address);}
             }
             printf("}\n");
             assert(!((instruction.POP.registers >> 13) & 1));
@@ -3186,13 +3186,20 @@ void step_machine(int steps)
             uint8_t carry;
             uint8_t overflow;
             AddWithCarry(state.SP, instruction.ADD_SPI.imm32, 0, &result, &carry, &overflow);
-            state.r[instruction.ADD_SPI.d] = result;
-            if (instruction.setflags && instruction.ADD_SPI.d != 15)
+            if (instruction.ADD_SPI.d == 15)
             {
-               state.n = (result >> 31) & 1;
-               state.z = (result == 0);
-               state.c = carry;
-               state.v = overflow;
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.ADD_SPI.d] = result;
+               if (instruction.setflags && instruction.ADD_SPI.d != 15)
+               {
+                  state.n = (result >> 31) & 1;
+                  state.z = (result == 0);
+                  state.c = carry;
+                  state.v = overflow;
+               }
             }
             break;
          }
@@ -3203,13 +3210,21 @@ void step_machine(int steps)
             uint32_t result;
             uint8_t carry;
             uint8_t overflow;
-            AddWithCarry(state.SP, ~instruction.ADD_SPI.imm32, 1, &result, &carry, &overflow);
-            if (instruction.setflags && instruction.ADD_SPI.d != 15)
+            AddWithCarry(state.SP, ~instruction.SUB_SPI.imm32, 1, &result, &carry, &overflow);
+            if (instruction.SUB_SPI.d == 15)
             {
-               state.n = (result >> 31) & 1;
-               state.z = (result == 0);
-               state.c = carry;
-               state.v = overflow;
+               ALU_LOAD_PC(result);
+            }
+            else
+            {
+               state.r[instruction.SUB_SPI.d] = result;
+               if (instruction.setflags)
+               {
+                  state.n = (result >> 31) & 1;
+                  state.z = (result == 0);
+                  state.c = carry;
+                  state.v = overflow;
+               }
             }
             break;
          }
@@ -3470,7 +3485,11 @@ void step_machine(int steps)
             printf(" #0x%x\n", instruction.SVC.imm32);
             CHECK_CONDITION;
             if (instruction.SVC.imm32 == 0x80)
+            {
+               // CHECKME: Erm, does SVC set r0?
+               //state.r[0] =
                syscall(state.r[12]);
+            }
             break;
          }
          default:
