@@ -26,8 +26,8 @@ typedef enum
    MOV_R,
    CMP_I,
    B,
-   BL,
-   BLX,
+   BL_I,
+   BLX_I,
    PUSH,
    ADD_SPI,
    SUB_SPI,
@@ -61,10 +61,12 @@ typedef enum
    STM,
    STRD_I,
    MVN_I,
-   SVC
+   SVC,
+   BL_R,
+   BLX_R
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx"};
 
 typedef enum
 {
@@ -257,12 +259,20 @@ typedef struct
       {
          uint8_t t;
          int32_t imm32;
-      } BL;
+      } BL_I;
       struct
       {
          uint8_t t;
          int32_t imm32;
-      } BLX;
+      } BLX_I;
+      struct
+      {
+         uint8_t t, m;
+      } BL_R;
+      struct
+      {
+         uint8_t t, m;
+      } BLX_R;
       struct
       {
          uint8_t unaligned_allowed;
@@ -755,7 +765,7 @@ int decode_instruction(instruction_t* instruction)
                   else if (op2 == 2 && op == 1)
                      NOT_DECODED("BXJ");
                   else if (op2 == 3)
-                     NOT_DECODED("BLX");
+                     NOT_DECODED("BLX_?");
                   else if (op2 == 5)
                   {
                      // Saturating addition/subtraction
@@ -1220,8 +1230,8 @@ int decode_instruction(instruction_t* instruction)
             }
             else if ((op & 0b110000) == 0b110000)
             {               
-               instruction->opcode = BL;
-               instruction->BL.t = 0;
+               instruction->opcode = BL_I;
+               instruction->BL_I.t = 0;
                instruction->B.imm32 = SignExtend(24, (word & 0xffffff) << 2, 32);
                DECODED;
             }            
@@ -1322,9 +1332,9 @@ int decode_instruction(instruction_t* instruction)
          }
          else if ((op1 & 0b11100000) == 0b10100000)
          {  // A2
-            instruction->opcode = BLX;
-            instruction->BL.t = 1;
-            instruction->BL.imm32 = SignExtend(24, ((word & 0xffffff) << 2) | ((word >> 23) & 2), 32);
+            instruction->opcode = BLX_I;
+            instruction->BL_I.t = 1;
+            instruction->BL_I.imm32 = SignExtend(24, ((word & 0xffffff) << 2) | ((word >> 23) & 2), 32);
             DECODED;
          }
          assert(0); // STC, STC2, LDC_I, LDC2_I, LDC_L, LDC2_L, MCRR, MCRR2, MRRC, MRRC2, CDP, CDP2, MCR, MCR2, MRC, MRC2
@@ -1629,8 +1639,14 @@ int decode_instruction(instruction_t* instruction)
                   NOT_DECODED("ORN_I");
                }
                else if (op == 3 && Rn == 15)
-               {
-                  NOT_DECODED("MVN_I");
+               {  // T1
+                  instruction->opcode = MVN_I;
+                  instruction->MVN_I.d = (word2 >> 8) & 15;
+                  instruction->setflags = (word >> 4) & 1;
+                  instruction->MVN_I.imm32 = ThumbExpandImm_C(((word << 16) | word2), state.c, &instruction->MVN_I.c);
+                  if (instruction->MOV_I.d == 13 || instruction->MOV_I.d == 15)
+                     UNPREDICTABLE;
+                  DECODED;
                }
                else if (op == 4 && RdS != 31)
                {
@@ -1878,10 +1894,10 @@ int decode_instruction(instruction_t* instruction)
                   uint8_t J2 = (word2 >> 11) & 1;
                   uint8_t I1 = ~(J1 ^ S) & 1;
                   uint8_t I2 = ~(J2 ^ S) & 1;
-                  instruction->opcode = BLX;
-                  instruction->BL.t = 0;
+                  instruction->opcode = BLX_I;
+                  instruction->BL_I.t = 0;
                   assert((word2 & 1) != 1);
-                  instruction->BL.imm32 = SignExtend(24, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
+                  instruction->BL_I.imm32 = SignExtend(24, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
                   DECODED;
                }
                if ((op1 & 0b101) == 0b101)
@@ -1892,9 +1908,9 @@ int decode_instruction(instruction_t* instruction)
                   uint8_t J2 = (word2 >> 11) & 1;
                   uint8_t I1 = ~(J1 ^ S) & 1;
                   uint8_t I2 = ~(J2 ^ S) & 1;
-                  instruction->opcode = BL;
-                  instruction->BL.t = 1;
-                  instruction->BL.imm32 = SignExtend(24, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
+                  instruction->opcode = BL_I;
+                  instruction->BL_I.t = 1;
+                  instruction->BL_I.imm32 = SignExtend(24, (S << 23) | (I1 << 22) | (I2 << 21) | ((word & 0x3ff) << 12) | ((word2 & 0x7ff) << 1), 32);
                   DECODED;
                }
             }
@@ -2242,8 +2258,15 @@ int decode_instruction(instruction_t* instruction)
                DECODED;
             }
             else if ((opcode & 0b1110) == 0b1110)
-            {
-               NOT_DECODED("BLX");
+            {  // T1
+               instruction->opcode = BLX_R;
+               instruction->BL_R.t = 1;
+               instruction->BL_R.m = (word >> 3) & 15;
+               if (instruction->BL_R.m == 15)
+                  UNPREDICTABLE;
+               if (IN_IT_BLOCK && !LAST_IN_IT_BLOCK)
+                  UNPREDICTABLE;
+               DECODED;
             }
             ILLEGAL_OPCODE;
          }
@@ -3085,24 +3108,44 @@ void step_machine(int steps)
             state.next_instruction = instruction.B.imm32 + state.PC;
             break;
          }
-         case BL: // Both of these use the same values and do the same thing, but have different opcodes!
-         case BLX:
+         case BL_I: // Both of these use the same values and do the same thing, but have different opcodes!
+         case BLX_I:
          {
-            printf(" %08x\n", instruction.BL.imm32 + ((instruction.BL.t == 0)?(state.PC&~3):state.PC));
+            printf(" %08x\n", instruction.BL_I.imm32 + ((instruction.BL_I.t == 0)?(state.PC&~3):state.PC));
             CHECK_CONDITION;
             if (state.t == 0)
                state.LR = state.PC - 4;
             else
                state.LR = state.PC | 1;
-            if (instruction.BL.t == 0)
+            if (instruction.BL_I.t == 0)
             {
-               LOAD_PC((state.PC & ~3) + instruction.BL.imm32);
+               LOAD_PC((state.PC & ~3) + instruction.BL_I.imm32);
             }
             else
             {
-               LOAD_PC(state.PC + instruction.BL.imm32 | 1);
+               LOAD_PC(state.PC + instruction.BL_I.imm32 | 1);
             }
-            state.t = instruction.BL.t;
+            state.t = instruction.BL_I.t;
+            break;
+         }
+         case BL_R:
+         case BLX_R:
+         {
+            printf(" %s\n", reg_name[instruction.BL_R.m]);
+            CHECK_CONDITION;
+            if (state.t == 0)
+               state.LR = state.PC - 4;
+            else
+               state.LR = (state.PC - 2) | 1;
+            if (instruction.BL_R.t == 0)
+            {
+               LOAD_PC(state.r[instruction.BL_R.m]);
+            }
+            else
+            {
+               LOAD_PC(state.r[instruction.BL_R.m] | 1);
+            }
+            state.t = instruction.BL_R.t;
             break;
          }
          case BX:
@@ -3141,11 +3184,11 @@ void step_machine(int steps)
                   printf("%s ", reg_name[i]);
                   if (i == 13 && i != LowestSetBit(instruction.PUSH.registers))
                   {
-                     if (c) {write_mem(4, address, UNKNOWN); printf(" (to %08x) ", address);}
+                     if (c) {write_mem(4, address, UNKNOWN); /*printf(" (to %08x) ", address);*/}
                   }
                   else
                   {
-                     if (c) {write_mem(4, address, state.r[i]); printf(" (to %08x) ", address);}
+                     if (c) {write_mem(4, address, state.r[i]); /*printf(" (to %08x) ", address);*/}
                   }
                   address += 4;
                }
@@ -3164,14 +3207,14 @@ void step_machine(int steps)
                if (instruction.POP.registers & (1 << i))
                {
                   printf("%s ", reg_name[i]);
-                  if (c) {state.r[i] = read_mem(4, address); printf(" (from %08x) ", address);}
+                  if (c) {state.r[i] = read_mem(4, address); /*printf(" (from %08x) ", address);*/}
                   address += 4;
                }
             }
             if ((instruction.POP.registers >> 15) & 1)
             {
                printf("pc ");
-               if (c) {LOAD_PC(read_mem(4, address)); printf(" (from %08x) ", address);}
+               if (c) {LOAD_PC(read_mem(4, address)); /*printf(" (from %08x) ", address);*/}
             }
             printf("}\n");
             assert(!((instruction.POP.registers >> 13) & 1));
@@ -3486,9 +3529,8 @@ void step_machine(int steps)
             CHECK_CONDITION;
             if (instruction.SVC.imm32 == 0x80)
             {
-               // CHECKME: Erm, does SVC set r0?
-               //state.r[0] =
-               syscall(state.r[12]);
+               // CHECKME: Erm, does SVC set r0? I dont think it can, since wont the SWI swap the context and destroy any registers?
+               state.r[0] = syscall(state.r[12]);
             }
             break;
          }
