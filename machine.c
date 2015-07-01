@@ -70,10 +70,12 @@ typedef enum
    LSR_I,
    MLS,
    MUL,
-   ASR_I
+   ASR_I,
+   UXTB,
+   UDF
 } opcode_t;
 
-char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx", "umull", "lsr", "mls", "mul", "asr"};
+char* opcode_name[] = {"ldr", "add", "add", "bic", "mov", "cmp", "b", "bl", "blx", "push", "add", "sub", "mov", "movt", "ldrb", "cbz", "cbnz", "pop", "str", "cmp", "eor", "tst", "ldr", "bkpt", "strb", "it", "bx", "and", "str", "ldrex", "strex", "ldm", "orr", "uxth", "sub", "orr", "ldr", "ubfx", "mrc", "stm", "strd", "mvn", "svc", "bl", "blx", "umull", "lsr", "mls", "mul", "asr", "uxtb", "udf"};
 
 typedef enum
 {
@@ -117,7 +119,7 @@ page_table_t* page_tables = NULL;
 #define NOT_DECODED(t) not_decoded(t, __LINE__)
 void not_decoded(char* t, int line) {printf("Instruction %s is not decoded on line %d\n", t, line); exit(-1);}
 #define UNPREDICTABLE assert(0 && "Unpredictable")
-#define UNDEFINED assert(0 && "Undefined")
+#define UNDEFINED {printf("Permanently undefined instruction encountered\n"); exit(-1);}
 #define DECODED return 1
 
 // ARMv7 always supports unaligned memory access
@@ -377,6 +379,10 @@ typedef struct
       } UXTH;
       struct
       {
+         uint8_t d, m, rotation;
+      } UXTB;
+      struct
+      {
          uint8_t d, n, lsbit, widthminus1;
       } UBFX;
       struct
@@ -414,6 +420,10 @@ typedef struct
       {
          uint8_t d, n, m;
       } MUL;
+      struct
+      {
+         uint32_t imm32;
+      } UDF;
    };
 } instruction_t;
 
@@ -1191,7 +1201,11 @@ int decode_instruction(instruction_t* instruction)
             else if (((op1 & 0b11110) == 0b11110) && ((op2 & 0b011) == 0b010))
                NOT_DECODED("UBFX");
             else if (op1 == 0b11111 && op2 == 0b111)
-               UNDEFINED; // Permanently UNDEFINED
+            {  // A1
+               instruction->opcode = UDF;
+               instruction->UDF.imm32 = (word & 0xf) | ((word >> 4) & 0xfff0);
+               DECODED;
+            }
          }
          else if ((op1 & 0b110) ==  0b100)
          {
@@ -1283,7 +1297,9 @@ int decode_instruction(instruction_t* instruction)
             uint8_t Rn = (word >> 16) & 15;
             uint8_t op = (word >> 4) & 1;
             if ((op1 & 0b111110) == 0)
-               UNDEFINED; // Permanently UNDEFINED
+            {
+               UNDEFINED; // UNDEFINED but not UDF?
+            }
             else if ((op1 & 0b110000) == 0b110000)
             {  // A1
                instruction->opcode = SVC;
@@ -1619,7 +1635,9 @@ int decode_instruction(instruction_t* instruction)
                uint8_t op = (word2 >> 4) & 1;
                uint8_t Rn = word & 15;
                if ((op1 & 0b111110) == 0)
+               {
                   UNDEFINED;
+               }
                else if ((op1 & 0b110000) == 0b110000)
                {
                   // Advanced SIMD
@@ -1996,8 +2014,10 @@ int decode_instruction(instruction_t* instruction)
                   DECODED;
                }
                if (op1 == 0b010)
-               {
-                  UNDEFINED; // Permanently UNDEFINED
+               {  // T2
+                  instruction->opcode = UDF;
+                  instruction->UDF.imm32 = (word & 0xf) | ((word2 << 4) & 0xfff0);
+                  DECODED;
                }
                if ((op1 & 0b101) == 0b100)
                {
@@ -2378,8 +2398,13 @@ int decode_instruction(instruction_t* instruction)
                DECODED;
             }
             else if (opcode == 0b01111)
-            {
-               NOT_DECODED("SUB_I");
+            {  // T1
+               instruction->opcode = SUB_I;
+               instruction->SUB_I.d = word & 7;
+               instruction->SUB_I.n = (word >> 3) & 7;
+               instruction->setflags = !IN_IT_BLOCK;
+               instruction->SUB_I.imm32 = (word >> 6) & 7;
+               DECODED;
             }
             else if ((opcode & 0b11100) == 0b10000)
             {
@@ -2731,8 +2756,12 @@ int decode_instruction(instruction_t* instruction)
                DECODED;
             }
             else if ((opcode & 0b1111110) == 0b0010110)
-            {
-               NOT_DECODED("UXTB");
+            {  // T1
+               instruction->opcode = UXTB;
+               instruction->UXTB.d = word & 7;
+               instruction->UXTB.m = (word >> 3) & 7;
+               instruction->UXTB.rotation = 0;
+               DECODED;
             }
             else if ((opcode & 0b1111000) == 0b0011000)
             {  // T1 as well
@@ -2884,9 +2913,10 @@ int decode_instruction(instruction_t* instruction)
                DECODED;
             }
             else if (opcode == 0b1110)
-            {
-               NOT_DECODED("UDF");
-            }
+            {  // T1
+               instruction->opcode = UDF;
+               instruction->UDF.imm32 = word & 0xff;
+               DECODED;            }
             else if (opcode == 0b1111)
             {
                NOT_DECODED("SVC");
@@ -2979,7 +3009,7 @@ void step_machine(int steps)
 
       printf("    %04d%s: ", step, state.t==0?"A":"T");
 #ifdef WITH_FUNCTION_LABELS
-      printf("<%-20.20s> %-30.30s:", current_module, current_function);
+      printf("<%-30.30s> %-30.30s:", current_module, current_function);
 #endif
       print_opcode(&instruction);
 
@@ -3726,6 +3756,16 @@ void step_machine(int steps)
             state.r[instruction.UXTH.d] = rotated & 0xffff;
             break;
          }
+         case UXTB:
+         {
+            if (instruction.UXTB.rotation == 0) printf("%s, %s\n", reg_name[instruction.UXTB.d], reg_name[instruction.UXTB.m]);
+            else printf("%s, %s, %d\n", reg_name[instruction.UXTB.d], reg_name[instruction.UXTB.m], instruction.UXTB.rotation);
+            CHECK_CONDITION;
+            uint32_t rotated;
+            Shift(32, state.r[instruction.UXTH.m], ROR, instruction.UXTH.rotation, 0, &rotated);
+            state.r[instruction.UXTH.d] = rotated & 0xff;
+            break;
+         }
          case UBFX:
          {
             printf(" %s, %s, #0x%x, #0x%x\n", reg_name[instruction.UBFX.d], reg_name[instruction.UBFX.n], instruction.UBFX.lsbit, instruction.UBFX.widthminus1 + 1);
@@ -3885,6 +3925,12 @@ void step_machine(int steps)
             }
             break;
          }
+         case UDF:
+         {
+            printf(" 0x%08x\n", instruction.UDF.imm32);
+            printf("    .... Undefined instruction encountered\n");
+            exit(-1);
+         }
          default:
             assert(0 && "Opcode not implemented");
       }
@@ -3967,3 +4013,4 @@ int main(int argc, char** argv)
    printf("Finished stepping\n");
    return 0;
 }
+
