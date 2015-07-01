@@ -57,13 +57,20 @@ uint32_t posix_kill()
    return 0;   
 }
 
+uint32_t posix_semwait_signal_nocancel()
+{
+   printf(" .... Hello from semwait_signal_nocancel(%08x, %08x, %08x). I wonder what this does...? I guess it waits on some sort of semaphore\n", A0, A1, A2);
+   // Actually it is defined in XNU in xnu/bsd/kern/kern_sig.c
+   return 0;
+}
 
 uint32_t (*mach_call[256])(void) = {[0x1a] = mach_reply_port,
                                     [0x1c] = mach_task_self,
                                     [0x1f] = mach_msg_trap};
-uint32_t (*posix_call[256])(void) = {[0x14] = posix_getpid,
+uint32_t (*posix_call[512])(void) = {[0x14] = posix_getpid,
                                      [0x25] = posix_kill,
-                                     [0x30] = posix_sigprocmask};
+                                     [0x30] = posix_sigprocmask,
+                                     [0x1a7] = posix_semwait_signal_nocancel};
    
 uint32_t syscall(int32_t number)
 {

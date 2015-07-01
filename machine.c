@@ -13,6 +13,8 @@
 #include "coprocessor.h"
 #include "symtab.h"
 #include "syscall.h"
+#include "function_map.h"
+
 
 #define HaveLPAE() 0
 #define BigEndian() 0
@@ -102,7 +104,11 @@ page_table_t* page_tables = NULL;
 
 #define IN_IT_BLOCK ((state.itstate & 15) != 0)
 #define LAST_IN_IT_BLOCK ((state.itstate & 15) == 8)
+#ifdef WITH_FUNCTION_LABELS
+#define LOAD_PC(p) {state.next_instruction = (p) & ~1; state.t = ((p) & 1);branch_detected(p);}
+#else
 #define LOAD_PC(p) {state.next_instruction = (p) & ~1; state.t = ((p) & 1);}
+#endif
 #define ALU_LOAD_PC(p) {if (state.t == 0) {LOAD_PC(p)} else {state.next_instruction = p;}}
 
 #define UNKNOWN 0xdeadbeef
@@ -593,7 +599,7 @@ void initialize_state()
 
 int decode_instruction(instruction_t* instruction)
 {
-   printf("instruction at = %08x, SP = %08x, thumb=%d\n", state.next_instruction, state.SP, state.t);
+   //printf("instruction at = %08x, SP = %08x, thumb=%d\n", state.next_instruction, state.SP, state.t);
    instruction->source_address = state.next_instruction;
    if (state.t == 0) // ARM mode
    {
@@ -2926,6 +2932,18 @@ int condition_passed(uint8_t condition)
    return 1;
 }
 
+#ifdef WITH_FUNCTION_LABELS
+char* current_module = "unknown";
+char* current_function = "<unknown>";
+void branch_detected(uint32_t to_address)
+{
+   if (!lookup_function(to_address, &current_module, &current_function))
+   {
+      current_module = "unknown";
+      current_function = "<unknown>";
+   }
+}
+#endif
 
 void print_opcode(instruction_t* instruction)
 {
@@ -2960,6 +2978,9 @@ void step_machine(int steps)
       }
 
       printf("    %04d%s: ", step, state.t==0?"A":"T");
+#ifdef WITH_FUNCTION_LABELS
+      printf("<%-20.20s> %-30.30s:", current_module, current_function);
+#endif
       print_opcode(&instruction);
 
       switch(instruction.opcode)

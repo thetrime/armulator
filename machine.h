@@ -1,3 +1,6 @@
+#define WITH_FUNCTION_LABELS
+
+
 #include <stdint.h>
 void map_memory(unsigned char* data, uint32_t address, uint32_t length);
 void write_mem(uint8_t count, uint32_t addr, uint64_t value);

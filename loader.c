@@ -3,6 +3,7 @@
 #include "map.h"
 #include "symtab.h"
 #include "dyld_cache.h"
+#include "function_map.h"
 #include <unistd.h>
 
 //#define printf(...) (void)0
@@ -443,26 +444,17 @@ void parse_executable(unsigned char* data, uint32_t offset, char* filename)
             printf("Got symtab containing %d symbols\n", c->nsyms);
             symbol_table = (struct nlist*)(&data[c->symoff - offset]);
             string_table = (char*)&data[c->stroff - offset];
-            /*
+#ifdef WITH_FUNCTION_LABELS
             for (int j = 0; j < c->nsyms; j++)
             {
                struct nlist* index_ptr = &symbol_table[j];
-               if ((index_ptr->n_type & N_TYPE) == N_UNDF)
+               if ((index_ptr->n_type & N_TYPE) == N_SECT)
                {
-                  // Undefined symbol
-                  // printf("Undefined Symbol %d (section: %d, type %d): %s\n", index_ptr->n_un.n_strx, index_ptr->n_sect, index_ptr->n_type, &data[c->stroff + index_ptr->n_un.n_strx - offset]);
-                  // printf("   **** Need to find symbol #%d (%s) to fill in stub at %08x in %s\n", j, &data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value, filename);
-               }
-               else
-               {
+                  found_function(filename, &data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value);
                   printf("%s provides symbol %s at address %08x with type %02x and attributes %04x section is #%d\n", filename, &data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value, index_ptr->n_type, index_ptr->n_desc, index_ptr->n_sect);
-                  if (index_ptr->n_desc & N_ARM_THUMB_DEF)
-                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx - offset], (index_ptr->n_value | 1));
-                  else
-                     found_symbol((char*)&data[c->stroff + index_ptr->n_un.n_strx - offset], index_ptr->n_value);
                }
             }
-            */
+#endif
             break;
          }
          case LC_DYSYMTAB:
